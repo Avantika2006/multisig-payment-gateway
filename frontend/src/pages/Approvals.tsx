@@ -12,6 +12,8 @@ import {
 
 import { useWallet } from "../context/WalletContext";
 import { getMultiSigWalletContract } from "../utils/contracts";
+import ProposePanel from "../components/ProposePanel";
+import { describeTransaction } from "../utils/describeTransaction";
 
 interface MultisigTransaction {
   id: number;
@@ -188,6 +190,8 @@ export default function Approvals() {
       {error && <div className="form-error">{error}</div>}
       {success && <div className="success-message">{success}</div>}
 
+      <ProposePanel isOwner={Boolean(isOwner)} onSubmitted={loadData} />
+
       <section className="panel">
         <div className="panel-heading">
           <h3>
@@ -210,7 +214,7 @@ export default function Approvals() {
                 <div className="approval-card-header">
                   <div>
                     <span className="muted-text">Transaction #{tx.id}</span>
-                    <h3>{tx.value} ETH</h3>
+                    <h3>{describeTransaction(tx.to, tx.value, tx.data).title}</h3>
                   </div>
 
                   <span
@@ -224,7 +228,7 @@ export default function Approvals() {
 
                 <div className="approval-details">
                   <span>Recipient</span>
-                  <strong>{tx.to}</strong>
+                  <strong>{describeTransaction(tx.to, tx.value, tx.data).detail}</strong>
                 </div>
 
                 <div className="approval-details">

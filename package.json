@@ -1,17 +1,22 @@
 {
   "name": "multisig-payment-gateway",
   "version": "1.0.0",
-  "description": "",
+  "description": "Quorum - a multi-signature payment gateway for merchants (Solidity, Hardhat, React, Node)",
   "main": "index.js",
   "directories": {
     "doc": "docs"
   },
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "compile": "hardhat compile",
+    "test": "hardhat test",
+    "node": "hardhat node",
+    "deploy:local": "hardhat run scripts/deploy.ts --network localhost",
+    "demo:local": "hardhat run scripts/demo.ts --network localhost",
+    "deploy:sepolia": "hardhat run scripts/deploy.ts --network sepolia"
   },
   "keywords": [],
   "author": "",
-  "license": "ISC",
+  "license": "MIT",
   "type": "module",
   "devDependencies": {
     "@nomicfoundation/hardhat-ethers": "^4.2.2",

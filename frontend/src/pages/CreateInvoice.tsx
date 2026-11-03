@@ -13,6 +13,7 @@ import {
 
 import { useWallet } from "../context/WalletContext";
 import { getMerchantPaymentContract } from "../utils/contracts";
+import InvoiceHistory from "../components/InvoiceHistory";
 
 function CreateInvoice() {
   const { account, provider, connectWallet } = useWallet();
@@ -301,6 +302,8 @@ Merchant: ${createdInvoice.merchant}`;
           )}
         </section>
       </div>
+
+      <InvoiceHistory refreshKey={createdInvoice?.id ?? ""} />
     </div>
   );
 }

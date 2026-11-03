@@ -1,0 +1,26 @@
+.invoice-history {
+  margin-top: 24px;
+}
+
+.invoice-history-tools {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.invoice-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.invoice-row-actions .secondary-button,
+.invoice-row-actions .primary-button {
+  padding: 6px 12px;
+  font-size: 12px;
+}
+
+.invoice-history .mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}

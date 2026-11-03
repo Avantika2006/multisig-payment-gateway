@@ -39,3 +39,8 @@ artifacts/
 cache/
 coverage/
 dist/
+
+# Quorum
+backend/data/
+deployments/localhost.json
+deployments/hardhatMainnet.json

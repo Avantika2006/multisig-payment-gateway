@@ -10,10 +10,13 @@ import {
 
 import { useWallet } from "../context/WalletContext";
 import { getMerchantPaymentContract } from "../utils/contracts";
+import { CONTRACT_ADDRESSES } from "../../contractAddresses";
+import InvoiceHistory from "../components/InvoiceHistory";
 
 interface PaymentRecord {
   id: string;
   customer: string;
+  merchant: string;
   amount: string;
   transactionHash: string;
   blockNumber: number;
@@ -45,16 +48,21 @@ export default function Transactions() {
         return {
           id: args.invoiceId.toString(),
           customer: args.customer,
+          merchant: args.merchant,
           amount: ethers.formatUnits(args.amount, 6),
           transactionHash: log.transactionHash,
           blockNumber: log.blockNumber,
         };
       });
 
-      const filtered = account
+      const me = account?.toLowerCase();
+      const multisig = CONTRACT_ADDRESSES.MULTISIG_WALLET.toLowerCase();
+      const filtered = me
         ? records.filter(
             (item) =>
-              item.customer.toLowerCase() === account.toLowerCase()
+              item.customer.toLowerCase() === me ||
+              item.merchant.toLowerCase() === me ||
+              item.merchant.toLowerCase() === multisig
           )
         : records;
 
@@ -94,6 +102,8 @@ export default function Transactions() {
         </button>
       </div>
 
+      <InvoiceHistory />
+
       <section className="panel">
         <div className="panel-heading">
           <h3>
@@ -120,6 +130,7 @@ export default function Transactions() {
               <thead>
                 <tr>
                   <th>Invoice</th>
+                  <th>Type</th>
                   <th>Customer</th>
                   <th>Amount</th>
                   <th>Block</th>
@@ -131,6 +142,12 @@ export default function Transactions() {
                 {payments.map((payment) => (
                   <tr key={payment.transactionHash}>
                     <td>#{payment.id}</td>
+                    <td>
+                      {account &&
+                      payment.customer.toLowerCase() === account.toLowerCase()
+                        ? "Paid"
+                        : "Received"}
+                    </td>
                     <td>
                       {payment.customer.slice(0, 6)}...
                       {payment.customer.slice(-4)}
