@@ -82,7 +82,7 @@ MerchantPayment pays whoever called createInvoice. If the **MultiSigWallet itsel
 
 ## 5. How Everything Works: The Lifecycle
 
-1. **Create the invoice.** Owner proposes createInvoice(500 mUSDC) through the multi-sig, two owners approve, one executes. Invoice #0 now exists with the multi-sig as merchant. (A normal wallet can also create invoices, in which case that wallet is the merchant.)
+1. **Create the invoice.** Owner proposes createInvoice(500 mUSDC) through the multi-sig, two owners approve, one executes. Invoice #0 now exists with the multi-sig as merchant. (The dashboard always creates invoices this way. At contract level a normal wallet could still call createInvoice directly, in which case that wallet is the merchant.)
 2. **Customer pays.** Customer approves the gateway to spend 500 mUSDC, then calls payInvoice(0). The tokens move into the multi-sig and PaymentReceived is emitted.
 3. **Receipt.** The event, the stored invoice and the transaction hash are the receipt. The backend serves it at /api/receipts/0 and can fire a payment.confirmed webhook.
 4. **Refund request.** The customer asks for 200 back. An owner proposes mUSDC.transfer(customer, 200) on the multi-sig and approves it.
@@ -94,11 +94,13 @@ MerchantPayment pays whoever called createInvoice. If the **MultiSigWallet itsel
 
 The dashboard is a React app at localhost:5173. It connects to MetaMask, reads the blockchain with ethers and sends transactions that you confirm in MetaMask. The header shows the network and a Connect Wallet button; the sidebar switches pages.
 
+Each page has one job: **Overview** summarises, **Invoices** creates and pays, **Approvals** decides, **Activity** records.
+
 ### Overview
 
-- **What it shows:** a welcome screen, summary cards, a volume chart, a status donut, quick actions, recent transactions and a wallet status card with your network and balances.
-- **Why it exists:** a landing page that gives the merchant the feeling of a control center and quick links to the main tasks.
-- **Honest note:** the wallet status card is live (real address, network and balances). The summary cards, the chart and the donut are currently placeholders that show zeros or an illustrative curve. Wiring them to the invoice and payment data is a good future improvement.
+- **What it shows:** four live cards (treasury balance held by the multi-sig, total received, invoices awaiting payment, proposals awaiting approval), the six most recent on-chain events, and quick actions.
+- **Why it exists:** the merchant's control center. Everything on it is real data from the contracts and the backend.
+- **Reads from:** the token's balanceOf (treasury), the backend's /api/invoices and /api/events, and the multi-sig's proposals.
 
 ### My Wallet
 
@@ -106,28 +108,29 @@ The dashboard is a React app at localhost:5173. It connects to MetaMask, reads t
 - **Why it exists:** before paying or approving anything you need to confirm which account is connected and that it has gas (ETH) and tokens (mUSDC).
 - **Reads from:** the provider balance and the token contract’s balanceOf.
 
-### Create Invoice
+### Invoices
 
-- **What it does:** you type an amount and press Create invoice on-chain. MetaMask asks you to confirm createInvoice. A preview card then shows the invoice ID, amount, merchant and status Awaiting payment, with a button to copy the details.
-- **Invoice history (bottom of the page):** a permanent list of invoices rebuilt from the contract’s InvoiceCreated and PaymentReceived events. It shows amount, merchant (You, Multisig or an address), status (Paid or Awaiting payment), who paid, the block and a copyable transaction hash. A Mine/All switch filters the list.
-- **Pay button:** on an unpaid invoice that belongs to someone else, the connected customer wallet gets a Pay button that does the approval and the payment.
-- **Why it exists:** it is how invoices come into existence and how a record is kept for bookkeeping. Nothing is stored in a database; the blockchain is the archive.
-- **Writes to:** MerchantPayment (createInvoice, payInvoice) and the token (approve).
-- **Important:** an invoice created here makes the connected wallet the merchant. To have the money land in the multi-sig, create the invoice through Approvals, New proposal, Create invoice as multisig.
+- **For owners:** type an amount and press **Propose invoice**. This submits a multi-sig proposal for createInvoice (and optionally approves it for you), so the invoice only exists after the required owners approve and one executes. The treasury is always the merchant, so every payment lands in the multi-sig. A status card shows the proposal number and how many approvals it still needs, with a link to Approvals.
+- **For customers:** the create form is hidden; the page lists open invoices.
+- **Invoice history (bottom of the page):** every invoice with amount, merchant (You, Multisig or an address), status (Paid or Awaiting payment), who paid, the block and a copyable transaction hash. A Mine/All switch filters the list. The list comes from the backend indexer, with a fallback that reads the contract's events directly.
+- **Pay button:** on an unpaid invoice, the connected customer wallet gets a Pay button that does the token approval and the payment (two MetaMask confirmations).
+- **Writes to:** MultiSigWallet (submitTransaction, approveTransaction), MerchantPayment (payInvoice) and the token (approve).
 
 ### Approvals
 
-- **What it shows:** the multi-sig’s owners, the number of approvals required, and a card for every proposal with a readable title such as Send 200 mUSDC, the real recipient, status and how many approvals it has.
-- **Buttons:** **Approve** (owners only, once per proposal) and **Execute** (when enough approvals exist).
-- **New proposal form:** owners can create a refund, a withdrawal or an invoice-as-multisig proposal. It can approve it for you in the same step.
-- **Warning banner:** if the connected wallet is not an owner, the page says so and disables actions.
+- **What it shows:** the number of approvals required and a **Waiting for approval** list. Each proposal card has a readable title such as Send 200 mUSDC or Create invoice (500 mUSDC), its target, an approval progress bar, and whether you have already approved it.
+- **Buttons:** **Approve** (owners only; shows You approved afterwards) and **Execute** (enabled only once enough approvals exist, so an early execution is impossible from the UI and reverts on-chain).
+- **Move treasury funds form:** owners propose a refund to a customer or a withdrawal. It can approve it for you in the same step.
+- **Executed proposals:** a history table of everything that has been carried out.
+- **Non-owners:** see the proposals but get a banner and no buttons.
 - **Why it exists:** this is the heart of the project, the place where shared control actually happens.
 - **Writes to:** MultiSigWallet (submitTransaction, approveTransaction, executeTransaction).
 
-### Transactions
+### Activity
 
-- **What it shows:** the invoice history again (all invoices) and a **Payment history** table of PaymentReceived events involving you, tagged Paid (you were the customer) or Received (you or your multi-sig was the merchant), with block number and copyable hash.
-- **Why it exists:** a ledger-style activity page for audits and the report screenshots.
+- **What it shows:** a timeline of every on-chain event (invoice created, invoice paid, proposal submitted, approved, executed) with details, block, time and an **Etherscan link** for each transaction. Filters: All, Invoices & payments, Multisig. A footnote shows how far the indexer has got and that new events appear after the confirmation delay.
+- **Why it exists:** the public audit trail, and the easiest way to prove a receipt in the demo.
+- **Reads from:** the backend's /api/events and /api/status.
 
 ### Settings
 
@@ -163,7 +166,7 @@ A Node.js service in the backend folder. It is independent of the dashboard.
 
 - **scripts/deploy.ts:** deploys the token, gateway and a 2-of-3 multi-sig; funds test accounts on a local chain; writes deployments/\<network>.json and the frontend addresses.
 - **scripts/demo.ts:** runs the invoice, payment, refund, early-execution and non-owner story on a local chain, prints a gas table and leaves a pending proposal so the Approvals page has something to show.
-- **Tests:** 30 gateway tests plus 5 template tests. They cover happy paths, every revert, event arguments, the multi-sig as merchant, partial refunds and the compromised-owner attack. Line coverage on the three contracts is 100 percent.
+- **Tests:** 30 contract tests covering happy paths, every revert, event arguments, the multi-sig as merchant, partial refunds and the compromised-owner attack. Line and statement coverage is 100 percent. The backend has 5 more tests for webhook signing and backoff.
 
 ## 10. Security Model and Limits
 
@@ -176,8 +179,8 @@ A Node.js service in the backend folder. It is independent of the dashboard.
 - No invoice expiry and no dedicated refund function; refunds are multi-sig transfers.
 - No price oracle (Chainlink) or fiat conversion; amounts are in mUSDC.
 - The backend API has no authentication and uses a JSON file.
-- Anyone can create an invoice; making the multi-sig the merchant is a usage convention.
-- The Overview cards and chart are placeholders.
+- Anyone can create an invoice at contract level; making the multi-sig the merchant is enforced by the dashboard, not by the contract.
+- Every action needs the same 2-of-3 approval; there are no amount-based tiers and no time-lock.
 
 ## 11. How to Deploy
 

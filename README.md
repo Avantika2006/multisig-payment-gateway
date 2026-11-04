@@ -20,7 +20,28 @@ Traditional payment gateways keep the receipt ledger in a database the processor
 - **Refund workflow** — a refund is a multi-sig token transfer back to the customer (partial refunds supported).
 - **Event indexer + REST API** — Node.js service that follows the chain, survives restarts, and serves invoices, proposals, receipts and an activity feed.
 - **Signed webhooks** — Stripe-style HMAC-SHA256 webhooks with retries and exponential backoff (`payment.confirmed`, `refund.executed`, `approval.pending`, ...).
-- **Merchant dashboard (React)** — overview, wallet, create invoice with a permanent **invoice history** (rebuilt from on-chain events), a **Pay** button for customers, approvals queue with a **New proposal** form and signer progress, transactions, settings.
+- **Merchant dashboard (React)** — each page has one job:
+  - **Overview** — live treasury balance, total received, open invoices, proposals awaiting approval, and recent activity.
+  - **Invoices** — owners propose invoices *through the multi-sig* (so every payment lands in the treasury); customers see open invoices and **Pay** them (`approve` + `payInvoice`).
+  - **Approvals** — pending proposals with approval progress ("You approved"), the refund / withdrawal form, and executed history.
+  - **Activity** — a timeline of every on-chain event with Etherscan links and the indexer's progress.
+  - Wallet and settings. Lists are served by the backend indexer, with a chunked on-chain fallback when it is offline.
+
+## Live deployment (Sepolia testnet)
+
+| Contract | Address |
+|---|---|
+| `MockStablecoin` (mUSDC) | [`0x59f961E1d23492e0ae36756cFde740e45EB7DbE5`](https://sepolia.etherscan.io/address/0x59f961E1d23492e0ae36756cFde740e45EB7DbE5) |
+| `MerchantPayment` | [`0xc8c10314C73c43D2597509B2a47C94A9E37a748a`](https://sepolia.etherscan.io/address/0xc8c10314C73c43D2597509B2a47C94A9E37a748a) |
+| `MultiSigWallet` (2-of-3) | [`0xb596578E1F5F17659478a756AdAf099d2738d35b`](https://sepolia.etherscan.io/address/0xb596578E1F5F17659478a756AdAf099d2738d35b) |
+
+Owners, threshold and start block are in [`deployments/sepolia.json`](deployments/sepolia.json).
+
+**End-to-end run on Sepolia** (verifiable on Etherscan):
+
+1. Owner 1 proposed `createInvoice(500 mUSDC)` through the multi-sig ([submit tx](https://sepolia.etherscan.io/tx/0x599ca7b2e0b607c1d318e6f6b235c0e023f7a5de9fec9858bc3bc12dc21e8f98)).
+2. Owners 1 and 2 approved; the proposal was executed and invoice `#0` was created with the multi-sig as merchant ([execute tx](https://sepolia.etherscan.io/tx/0x15a9280ddd7e40a859d64d00ab18c27f28f6c6957baf5fff93c66460b0764e34)).
+3. The customer paid 500 mUSDC into the multi-sig ([payment tx](https://sepolia.etherscan.io/tx/0x5437ff95b39571a7682a194c24759fe16ae275e9fa8512fe2ca50522ba5b7236)); the backend issued receipt `RCPT-0000` and delivered a signed `payment.confirmed` webhook.
 
 ## 3. How it works
 
@@ -165,13 +186,13 @@ It plays the invoice → payment → refund story above, shows the failed early 
 ## 8. Testing
 
 ```bash
-npm test                      # 30 gateway tests (+5 Hardhat template tests until Counter.* is deleted)
+npm test                      # 30 contract tests
 npx hardhat test --coverage   # line coverage
 npx hardhat test --gas-stats  # gas report
 cd backend && npm test        # webhook signing / backoff unit tests
 ```
 
-Coverage of the three project contracts is 100 % lines and statements (the remaining Hardhat template files `Counter.sol` / `HelloGateway.sol` can be deleted).
+Coverage of all three contracts is **100 % lines and statements**.
 
 **What is tested**
 
@@ -207,7 +228,7 @@ The backend turns raw chain events into a merchant-friendly API.
 | `RPC_URL` | `http://127.0.0.1:8545` | JSON-RPC endpoint (Alchemy / Infura URL for Sepolia) |
 | `CONFIRMATIONS` | `0` | Blocks to wait before processing (use 3+ on Sepolia) |
 | `POLL_INTERVAL_MS` | `2000` | Polling interval |
-| `BLOCK_CHUNK` | `2000` | Max blocks per `getLogs` call |
+| `BLOCK_CHUNK` | `2000` | Max blocks per `getLogs` call (Alchemy's free tier allows **10**) |
 | `PORT` | `4001` | API port |
 | `EXPLORER_URL` | — | e.g. `https://sepolia.etherscan.io`, adds links to receipts |
 | `WEBHOOK_URL` | — | Merchant endpoint; webhooks are disabled when empty |
@@ -262,7 +283,7 @@ Headers: `X-Quorum-Timestamp`, `X-Quorum-Signature: sha256=<hex>` where the sign
    ```
    (On Windows PowerShell set the variables first: `$env:MULTISIG_OWNERS="..."`.) The script saves `deployments/sepolia.json` and rewrites `frontend/contractAddresses.ts` with the Sepolia addresses and the start block. `npm run demo:local` only works on a local chain; on Sepolia use the dashboard with MetaMask. Run `npm run deploy:local` again to switch the frontend back to your local chain.
 4. Verify the source on Etherscan with the `hardhat-verify` plugin (already installed; add your Etherscan API key as a config variable) so anyone can read the contracts.
-5. Run the backend with `NETWORK=sepolia`, `RPC_URL=<your Sepolia RPC>`, `CONFIRMATIONS=3`, and point the frontend's `contractAddresses.ts` at the new addresses (the deploy script rewrites it).
+5. Run the backend with `NETWORK=sepolia`, `RPC_URL=<your Sepolia RPC>`, `CONFIRMATIONS=3`, `BLOCK_CHUNK=10` (Alchemy free tier) and `EXPLORER_URL=https://sepolia.etherscan.io`. The frontend already points at the new addresses (the deploy script rewrites `contractAddresses.ts`).
 
 ### Troubleshooting Sepolia deploys
 
@@ -288,6 +309,9 @@ Remove-Item Env:SEPOLIA_RPC_URL, Env:SEPOLIA_PRIVATE_KEY -ErrorAction SilentlyCo
 | `RPC URL reports chain 1` / `HHE708 … connected to a chain with id "1"` | The URL is Ethereum **mainnet** (`eth-mainnet…`, Alchemy's default) | Copy the **Ethereum Sepolia** URL `https://eth-sepolia.g.alchemy.com/v2/<key>` and `keystore set SEPOLIA_RPC_URL --force` |
 | Deployer `0xf39F…2266` | The private key is Hardhat's public test account #0 (copied from `npx hardhat node`) | Export your own MetaMask key and `keystore set SEPOLIA_PRIVATE_KEY --force` |
 | `code: -32000` from `signers.ts` | Usually "insufficient funds": a wrong chain or an unfunded deployer | Fix the two rows above, then fund the deployer from a Sepolia faucet |
+| `HHE50000: Invalid password or corrupted keystore file` | Keystore password mistyped | Run the command again; nothing was sent |
+| Backend logs `tick failed: server response 400 Bad Request` | Alchemy's free tier limits `eth_getLogs` to 10 blocks | Set `BLOCK_CHUNK=10` in `backend/.env` and restart |
+| MetaMask shows **Review alert** / insufficient funds with tiny balances | MetaMask's default Sepolia tip is high and it checks the worst-case fee | Edit the network fee → Advanced: max base fee `0.1` gwei, priority fee `0.01` gwei |
 
 `backend/.env` is only read by the backend; Hardhat never reads it. The `sepolia` network also has `chainId: 11155111` in `hardhat.config.ts`, so Hardhat refuses to send anything to a non-Sepolia RPC.
 
@@ -300,7 +324,8 @@ This is a learning project and **has not been audited**. Known limitations:
 - `MultiSigWallet` has no owner/threshold management and no way to revoke an approval or cancel a proposal.
 - `MerchantPayment` has no invoice expiry and no built-in refund function — refunds are multi-sig token transfers. It also lets *any* address create invoices; "merchant = the multi-sig" is a deployment convention, not enforced by the contract.
 - Invoice prices are fixed in mUSDC; there is no fiat conversion or price oracle (Chainlink was an optional extension).
-- Creating an invoice from the **Create invoice** page with a normal wallet makes *that wallet* the merchant. To have payments land in the multi-sig, create the invoice through **Approvals → New proposal → Create invoice as multisig**.
+- The dashboard only creates invoices through the multi-sig, but the contract does not enforce this: calling `createInvoice` directly from a normal wallet still works and makes that wallet the merchant.
+- Every action needs the same 2-of-3 approval; there are no amount-based tiers and no time-lock on large withdrawals.
 - The backend uses a JSON file as its database and its API has no authentication — fine for a demo, not for production.
 - Testnet only; MetaMask must be connected to the right network.
 
