@@ -1,397 +1,362 @@
-# Multi-Signature Payment Gateway for Merchants
+# Quorum: Multi-Signature Payment Gateway for Merchants
 
-**Problem Statement 7 · FinTech Blockchain Mini-Project · End-to-End Plan**
+**Problem Statement 7 · CS2614 Fundamentals of Blockchain · Project Plan and Implementation (as built)**
+
+> This document describes the project **as it was actually built and deployed**. It follows the structure of the original plan (kept in git history, commit `6096f28`) so each section can become a report chapter or a slide. Where the build differs from the original plan, the section says so and explains why. Section 16 summarises planned versus delivered.
 
 ## 1. Project at a Glance
 
-**One-line pitch:** a merchant payment gateway where customers pay in stablecoins, every payment creates a tamper-proof on-chain receipt, and any large refund or payout must be approved by several people (multi-signature) before the smart contract releases the money.
+**One-line pitch:** a merchant payment gateway where customers pay in a stablecoin, every payment creates a tamper-proof on-chain receipt, and **no money can leave the merchant's treasury without approval from 2 of 3 owners**, enforced by a smart contract.
 
-**What you will build**
+**What was built**
 
-- Smart contracts (Solidity) deployed on an Ethereum testnet
-- Chainlink price-feed integration to convert USD prices into token amounts
-- A backend service that watches the blockchain and sends webhooks (like Stripe does)
-- A web app: customer checkout page plus merchant dashboard with an approval queue
-- Tests, a security scan, documentation and a demo video
+- Three Solidity smart contracts, deployed and exercised end to end on the **Sepolia** testnet
+- A **2-of-3 multi-signature treasury** that is itself the merchant, so every payment lands in it
+- A Node.js **backend** that indexes the blockchain, serves a REST API and sends **HMAC-signed webhooks** (like Stripe)
+- A React **merchant dashboard** with Overview, Invoices, Approvals and Activity pages, connected through MetaMask
+- **30 contract tests with 100 % line coverage**, attack tests, a gas report, and a deployment script with safety checks
 
-**Suggested duration:** 5 to 6 weeks (stretch or compress to your deadline). **Team size:** 3 to 4 people (roles in section 11).
-
-**Skills you will pick up:** Solidity, smart-contract security, ERC-20 tokens, oracles, event indexing, wallet integration, typed signatures. These are exactly what payments-engineering and blockchain roles list.
+**Skills demonstrated:** Solidity, smart-contract security, ERC-20 tokens, multi-signature design, event indexing, webhooks, wallet integration, testnet deployment.
 
 ## 2. The Problem, and Why Blockchain
 
 Traditional card and gateway payments have four pain points:
 
 - Fees are high (roughly 2 to 3 percent plus a fixed fee) and settlement takes days.
-- The merchant must trust the processor’s database. A receipt is just a row the processor controls.
+- The merchant must trust the processor's database. A receipt is just a row the processor controls.
 - Refund and payout approvals are internal software rules. One compromised admin account can drain money (insider risk).
 - Disputes and chargebacks are slow and opaque.
 
-Stablecoin payments fix speed and cost, but create a new problem: whoever holds the private key controls everything. One leaked key means all funds are gone. Merchants therefore need shared control, where large transactions need approval from several people. That is a multi-signature (multi-sig) setup, and the problem statement asks you to build it into a gateway.
+Stablecoin payments fix speed and cost, but create a new problem: whoever holds the private key controls everything. One leaked key means all funds are gone. Merchants therefore need **shared control**, where moving money needs approval from several people. That is a multi-signature (multi-sig) setup, and Quorum builds it into the gateway.
 
-| Need | Blockchain feature | How this project uses it |
+| Need | Blockchain feature | How Quorum uses it |
 | --- | --- | --- |
-| Trustworthy receipts | Immutable ledger and event logs | Every payment emits an InvoicePaid event and stores a record anyone can verify on a block explorer |
-| No single point of failure | Multi-sig enforced by code | M-of-N approvals for large refunds and withdrawals |
-| Fast, cheap settlement | Stablecoins on a chain | Customer pays a stablecoin and the merchant balance updates in the same transaction |
-| Rules nobody can bypass | Smart contracts | Refund windows, limits and the refund state machine live in code, not in staff discretion |
-| Fair pricing | Oracles (Chainlink) | USD invoice converted to token amount; USD-based approval thresholds |
-| Auditability | Public transaction history | Every approval, refund and payout is timestamped and tied to a signer address |
+| Trustworthy receipts | Immutable ledger and event logs | Every payment emits `PaymentReceived` and updates the on-chain invoice; anyone can verify it on Etherscan |
+| No single point of failure | Multi-sig enforced by code | Invoices, refunds and withdrawals all need 2 of 3 owner approvals |
+| Fast, cheap settlement | Stablecoin on a chain | The customer pays mUSDC and the treasury receives it in the same transaction |
+| Rules nobody can bypass | Smart contracts | Pay-once, approve-before-execute and owner-only checks live in code, not in staff discretion |
+| Auditability | Public transaction history | Every approval and execution is timestamped and tied to a signer address |
 
-**Be honest in your viva:** blockchain is not used for everything. Personal data and heavy queries stay off-chain (see section 4).
+**Honest scope:** blockchain is not used for everything. Indexing, notifications and dashboard lists stay off-chain (section 4), and no personal data is stored on-chain.
 
-## 3. Blockchain Concepts You Need (Primer)
+## 3. Blockchain Concepts Used
 
-- **Wallet, address, private key:** an address identifies a user; the private key signs transactions. Signing proves who approved something.
-- **Smart contract:** code stored on the blockchain that holds funds and enforces rules automatically. Once deployed it cannot be quietly changed.
-- **Gas and testnet:** every transaction costs gas. On a testnet (Sepolia) gas is paid in free test ETH from faucets, so you can build without real money.
-- **ERC-20 token / stablecoin:** the standard token interface. Paying with a token is a two-step flow: the customer calls approve (let the gateway spend X), then the gateway calls transferFrom. Your checkout UI must handle both steps.
-- **Events (logs):** cheap, permanent records emitted by contracts. Your receipts and your backend listener rely on them.
-- **Multi-sig (M-of-N):** an action executes only after M of N authorised signers approve, for example 2 of 3.
-- **Oracle / Chainlink Data Feed:** contracts cannot fetch outside data themselves. Chainlink publishes prices on-chain, which a contract reads through the AggregatorV3Interface (latestRoundData). You must check the data is fresh and handle its decimals (usually 8).
-- **EIP-712 typed signatures (stretch):** lets a signer approve an action off-chain by signing structured data, which someone else submits later. The signer pays no gas.
-- **Confirmations / finality:** a transaction is only safe after several blocks. Your backend should wait for confirmations before sending a payment-confirmed webhook.
+- **Wallet, address, private key:** an address identifies a user; the private key signs transactions. Signing proves who approved something. MetaMask holds the keys; the dashboard never sees them.
+- **Smart contract:** code on the blockchain that holds funds and enforces rules automatically. Once deployed it cannot be quietly changed.
+- **Gas and testnet:** every transaction costs gas, paid on Sepolia in free test ETH.
+- **ERC-20 token / stablecoin:** paying with a token is two steps: the customer calls `approve` (let the gateway spend exactly X), then the gateway calls `transferFrom`. The dashboard handles both.
+- **Events (logs):** cheap, permanent records emitted by contracts. Receipts and the backend indexer rely on them.
+- **Multi-sig (M-of-N):** an action executes only after M of N authorised signers approve. Quorum uses 2 of 3.
+- **Confirmations / finality:** a transaction is only safe after several blocks. The backend waits 3 confirmations before treating an event as final and sending a webhook.
+- **Not used in this version:** Chainlink oracles and EIP-712 off-chain signatures (see section 17, future work).
 
 ## 4. System Architecture
 
 ```
-Customer wallet --> Checkout page (Next.js) --> PaymentGateway contract <-- Chainlink price feed
-                                                      |  emits events
-Merchant signers --> Merchant dashboard --> approve / execute txs --> same contract
-                                                      |
-                                         Event listener / indexer (Node.js)
-                                                      |
-                              Database + webhook sender + REST API --> merchant server
+ Customer wallet                                              Merchant owners (2-of-3)
+       │ 1. approve(mUSDC)                                             │ A. submitTransaction
+       │ 2. payInvoice(id)                                             │ B. approveTransaction x2
+       ▼                                                               ▼ C. executeTransaction
+┌──────────────┐  transferFrom   ┌───────────────────┐         ┌──────────────────┐
+│MockStablecoin│◄────────────────│  MerchantPayment  │◄────────│  MultiSigWallet  │
+│   (ERC-20)   │                 │ invoices+receipts │  calls  │ (the merchant)   │
+└──────────────┘                 └───────────────────┘         └──────────────────┘
+                                          │ events                      │ events
+                                          ▼                             ▼
+                 Backend: indexer ─► JSON store ─► REST API ─► React dashboard
+                                         └──────► signed webhooks ─► merchant server
 ```
+
+**The key design idea:** `MerchantPayment` pays whoever called `createInvoice()`. When the **`MultiSigWallet` contract itself** is that caller, every payment lands in the multi-sig, and every refund or withdrawal (a token transfer sent *by* the multi-sig) needs 2 of 3 owners. This is the same pattern production treasuries such as Safe (Gnosis Safe) use: a generic multi-sig that can call any contract.
 
 **What lives on-chain vs off-chain**
 
-| On-chain (trust-critical) | Off-chain (convenience and privacy) |
+| On-chain (trust-critical) | Off-chain (convenience) |
 | --- | --- |
-| Money movement and merchant balances | Product names, customer emails, any personal data |
-| Invoice status and receipt record | Invoice display details (a hash of them can go on-chain) |
-| Signer list, threshold, limits | Dashboard queries and filtering (served from the indexer DB) |
-| Approvals, refunds, withdrawals | Webhooks, notifications, analytics |
-
-For integrity, store a keccak256 hash of the off-chain invoice details in the invoice (metadataHash). Anyone can later prove the details were not altered.
+| Money movement and the treasury balance | Indexed copies of invoices, proposals and events for fast queries |
+| Invoice amount, merchant and paid status (the receipt) | Webhooks and the delivery log |
+| Owner list and threshold | Dashboard lists, filters and summaries |
+| Every proposal, approval and execution | Contract addresses and configuration |
 
 ## 5. Smart Contract Design
 
 ### 5.1 Contracts
 
-- **MockStablecoin.sol:** an ERC-20 with 6 decimals and a public mint function, so testers can get fake USDC. Built on OpenZeppelin.
-- **PaymentGateway.sol:** the main contract: merchants, invoices, payments, refunds, multi-sig proposals.
-- **Stretch:** a GatewayFactory that deploys one gateway per merchant.
+| Contract | Purpose |
+| --- | --- |
+| **MockStablecoin.sol** | Minimal ERC-20 "Mock USD Coin" (`mUSDC`, 6 decimals). 1,000,000 mUSDC are minted to the deployer, who funds test customers. |
+| **MerchantPayment.sol** | Invoices and payments. Uses OpenZeppelin `ReentrancyGuard` and `IERC20`. |
+| **MultiSigWallet.sol** | Generic M-of-N wallet: owners propose any contract call, approve it, and execute it once the threshold is reached. |
 
 ### 5.2 Core data structures
 
 ```solidity
-enum InvoiceStatus { Created, Paid, PartiallyRefunded, Refunded, Expired, Cancelled }
-enum ProposalType  { Refund, Withdrawal, ChangeSigners }
-
-struct Merchant {
-    address[] signers;       // the N owners
-    uint8 threshold;         // M in M-of-N
-    uint256 autoLimitUsd;    // below this, one signer can act (8 decimals)
-    uint256 balance;         // stablecoin held for this merchant
-    bool active;
-}
-
+// MerchantPayment
 struct Invoice {
-    uint256 id;
-    address merchant;
-    uint256 amountUsd;       // 8 decimals
-    uint256 amountToken;     // quote locked at creation
-    address payer;
-    uint64 expiresAt;
-    uint64 paidAt;
-    uint256 refunded;
-    bytes32 metadataHash;
-    InvoiceStatus status;
+    address merchant;   // who gets paid (the multi-sig in Quorum)
+    uint256 amount;     // in mUSDC (6 decimals)
+    bool paid;
 }
+mapping(uint256 => Invoice) public invoices;
 
-struct Proposal {
-    uint256 id;
-    ProposalType kind;
-    uint256 invoiceId;       // for refunds
-    address to;
-    uint256 amount;
-    uint8 approvals;
+// MultiSigWallet
+struct Transaction {
+    address to;            // contract to call
+    uint256 value;         // ETH to send
+    bytes data;            // encoded call, e.g. createInvoice(500) or transfer(customer, 200)
     bool executed;
-    uint64 executableAfter;  // time-lock
+    uint256 approvalCount;
 }
+mapping(uint256 => mapping(address => bool)) public approved;   // one approval per owner
 ```
 
 ### 5.3 Functions
 
 | Function | Who calls | What it does |
 | --- | --- | --- |
-| registerMerchant(signers, threshold, autoLimit) | Merchant | Creates the merchant account and its multi-sig policy |
-| createInvoice(amountUsd, expiry, metadataHash) | Merchant signer | Reads the price feed, locks the token amount, emits InvoiceCreated |
-| payInvoice(id) | Customer | Pulls tokens via transferFrom, credits merchant balance, marks Paid, emits InvoicePaid (the receipt) |
-| requestRefund(id, amount) | Customer or merchant | Opens a refund if inside the refund window and amount is within what was paid |
-| proposeWithdrawal(to, amount) | Signer | Opens a withdrawal proposal |
-| approveProposal(id) | Signer | Adds one approval; each signer can approve once |
-| executeProposal(id) | Anyone | Runs it only if approvals reach the threshold and the time-lock has passed |
-| cancelProposal(id) | Proposer or threshold | Cancels a pending proposal |
-| pause / unpause | Admin or multi-sig | Emergency stop |
+| `createInvoice(amount)` | The multi-sig (via a proposal) | Stores a new invoice with the caller as merchant, emits `InvoiceCreated` |
+| `payInvoice(id)` | Customer | Checks the invoice exists, is unpaid and the payer is not the merchant; marks it paid **before** pulling tokens; transfers mUSDC to the merchant; emits `PaymentReceived` (the receipt) |
+| `submitTransaction(to, value, data)` | Owner | Opens a proposal, emits `TransactionSubmitted` |
+| `approveTransaction(id)` | Owner | Adds one approval; each owner can approve once; emits `TransactionApproved` |
+| `executeTransaction(id)` | Owner | Runs the call only if `approvalCount >= requiredApprovals` and not already executed; emits `TransactionExecuted` |
+| `getOwners()`, `requiredApprovals()`, `getTransaction(id)`, `getTransactionCount()` | Anyone | Read-only views |
 
-### 5.4 Key logic, step by step
+### 5.4 Key logic
 
-**Payment:** check the invoice is Created and not expired, then (checks-effects-interactions) update state first, then pull the tokens, then emit the event. Reject wrong amounts or define clear overpay and underpay rules.
+**Payment:** check the invoice exists and is unpaid, mark it paid (checks-effects-interactions), then call `transferFrom`, then emit the receipt event. Paying twice, paying an unknown invoice, or a merchant paying their own invoice all revert.
 
-**Refund:** compute the USD value. If it is at or below autoLimitUsd, a single signer can execute it. If above, it becomes a proposal that needs M approvals. On execution reduce the merchant balance, transfer tokens to the payer, update the refunded amount and status, emit RefundExecuted.
+**Refund:** an owner proposes `mUSDC.transfer(customer, amount)` from the treasury. One approval is not enough (`Not enough approvals`); after the second approval an owner executes it. Partial refunds are supported. The backend recognises a transfer back to a paying customer (for no more than they paid) as a refund.
 
-**Withdrawal:** the same tier policy, plus a time-lock for large amounts (for example 24 hours in production, a few minutes in your demo, configurable).
+**Withdrawal:** the same mechanism, to any destination address.
 
-**Price conversion:** amountToken = amountUsd x 10^tokenDecimals / tokenPriceUsd, with the feed’s 8 decimals handled explicitly. Lock this quote at invoice creation with a short expiry (15 minutes) so the customer is not exposed to price swings. For a stablecoin the price is about 1, so also use the feed as a peg check and revert if the price has moved more than about 2 percent or the data is stale.
+**Events:** `InvoiceCreated`, `PaymentReceived`, `TransactionSubmitted`, `TransactionApproved`, `TransactionExecuted`, `Deposit`.
 
-**Events to emit** (your backend and receipts depend on these): MerchantRegistered, InvoiceCreated, InvoicePaid, RefundRequested, ProposalCreated, ProposalApproved, ProposalExecuted, RefundExecuted, WithdrawalExecuted.
+### 5.5 Security checklist
 
-### 5.5 Security checklist (build this in from day one)
+| Item | Status |
+| --- | --- |
+| `ReentrancyGuard` on the payment function, checks-effects-interactions | ✅ |
+| Owner-only submit / approve / execute; no double approval; no double execution | ✅ |
+| Input validation: zero amounts, zero addresses, duplicate owners, invalid threshold | ✅ |
+| Execution state updated **before** the external call; failed calls revert | ✅ |
+| Attack test: a single compromised owner cannot drain the treasury | ✅ |
+| SafeERC20, Pausable, custom errors | ❌ future work |
+| Owner / threshold changes through the multi-sig, proposal cancel | ❌ future work |
 
-- ReentrancyGuard on every function that moves tokens, plus checks-effects-interactions
-- SafeERC20 for token transfers
-- Role checks: only active signers may approve; no double approval by the same signer
-- Oracle checks: stale timestamp, zero or negative price
-- Decimals handling (6 for the token, 8 for the feed) and rounding direction
-- Expiry and replay protection (nonce and chainId if using EIP-712)
-- Pausable emergency stop; custom errors to save gas
-- Changing signers or threshold is itself a multi-sig action
+## 6. Multi-Signature Design
 
-## 6. Multi-Signature Deep Dive
+**Approach A, on-chain approvals (built).** Each owner sends their own transaction calling `approveTransaction`. Simple to test and to explain.
 
-**Approach A, on-chain approvals (build this first).** Each signer sends their own transaction calling approveProposal. Simple, easy to test and easy to explain.
+**Policy in this version:** a flat **2-of-3** for every action: creating invoices, refunds and withdrawals.
 
-**Approach B, EIP-712 off-chain signatures (stretch, great for interviews).** The signer signs a typed message (proposal id, nonce, chainId, contract address). One person collects the signatures and submits them in a single transaction. The contract recovers each signer address with ECDSA, checks it is a valid unique signer, and counts them. Benefits: signers pay no gas and approval is one transaction.
+**Rules enforced by the contract:** only owners can act; an owner cannot approve twice; execution needs at least the threshold; a proposal executes once; the threshold must be between 1 and the number of owners, and there must be at least 2 owners.
 
-**Suggested approval policy for the demo**
+**Why the multi-sig is the merchant:** because invoices are created *by* the multi-sig, the treasury receives the money directly. Nobody can redirect payments or withdraw them without a second owner.
 
-| Amount (USD) | Approval needed | Extra rule |
+**Approach B, EIP-712 off-chain signatures:** not built; listed as future work (owners would sign approvals off-chain and pay no gas).
+
+## 7. Price Oracle (Chainlink): deferred
+
+The original plan quoted invoices in USD and converted them with a Chainlink price feed. In this version **invoices are priced directly in a dollar stablecoin (mUSDC)**, so no conversion is needed and the demo has no dependency on oracle freshness on a testnet. Chainlink USD pricing with staleness and depeg checks is the first item in future work (section 17).
+
+## 8. Backend: Indexer, API and Webhooks (built)
+
+1. **Indexer:** a Node.js service (ethers v6) polls Sepolia through Alchemy in small block ranges, decoding events from both contracts.
+2. **Confirmations:** an event is processed only once **3 blocks** are on top of it, to handle reorgs.
+3. **Storage:** a JSON file with invoices, proposals, events and webhook deliveries. It stores `lastProcessedBlock` and de-duplicates by `txHash:logIndex`, so a restart catches up without missing or repeating anything.
+4. **Proposal decoding:** multi-sig calldata is decoded so proposals are labelled `create_invoice` or `token_transfer`, and transfers are classified as refunds or withdrawals.
+5. **Webhooks:** `invoice.created`, `payment.confirmed`, `approval.pending`, `approval.added`, `transaction.executed`, `refund.executed`, `withdrawal.executed`. Each is signed with HMAC-SHA256 over `timestamp.body`, retried with exponential backoff (1 s, 2 s, 4 s … up to 60 s), and protected against replay by rejecting timestamps older than 5 minutes.
+6. **REST API:** `/api/status`, `/api/invoices`, `/api/receipts/:id`, `/api/proposals`, `/api/events`, `/api/webhooks` (with manual retry).
+7. **Demo merchant server:** verifies every webhook signature before trusting it.
+
+## 9. Frontend: Merchant Dashboard (built)
+
+React 19 + TypeScript + Vite, ethers v6 and MetaMask. Each page has one job:
+
+| Page | Role | What it does |
 | --- | --- | --- |
-| Up to 100 | One signer | None |
-| 100 to 1,000 | 2 of 3 signers | None |
-| Above 1,000 | 2 of 3 (or 3 of 3) | Time-lock before execution |
+| **Overview** | Everyone | Live treasury balance, total received, invoices awaiting payment, proposals awaiting approval, recent on-chain activity, quick actions |
+| **Invoices** | Owners and customers | Owners **propose** invoices through the multi-sig (optionally approving in the same step) and see how many approvals are still needed; customers see open invoices and **Pay** them (approve + pay) |
+| **Approvals** | Owners | Pending proposals with approval progress and "You approved"; **Execute** is enabled only once enough approvals exist; refund / withdrawal form; executed history. Non-owners see a banner and no buttons. |
+| **Activity** | Everyone | Timeline of every on-chain event with Etherscan links and filters, plus the indexer's progress |
+| **My Wallet / Settings** | Everyone | Connected address, ETH and mUSDC balances, contract addresses |
 
-**Rules to enforce:** the proposer’s approval counts; a signer cannot approve twice; threshold must be at least 2 for large tiers and never exceed N; adding or removing signers requires the current threshold.
+The lists are read from the backend's API. If the backend is offline, the invoice list falls back to reading contract events directly in chunks that respect the RPC's block-range limit.
 
-## 7. Chainlink Integration
-
-1. Find the Sepolia price-feed addresses on the Chainlink Data Feeds documentation page (copy them from the official docs, never from a random site).
-2. Import AggregatorV3Interface and call latestRoundData().
-3. Validate: price greater than 0, updatedAt not older than your limit (for example 1 hour on testnet), answeredInRound valid.
-4. Normalise decimals with a helper function and unit-test it heavily.
-5. Use the feed for (a) USD to token quotes, (b) the stablecoin peg check, and (c) valuing balances in USD for withdrawal thresholds.
-6. Optional: support paying in ETH using the ETH/USD feed.
-
-For tests, write a MockAggregator so you can simulate price changes and stale data.
-
-## 8. Backend: Event Listener and Webhooks
-
-This is the part that makes the project feel like real payments engineering.
-
-1. **Listener:** a Node.js service using ethers connects to an RPC provider (Alchemy or Infura) and subscribes to the gateway events.
-2. **Confirmations:** mark an event confirmed only after N blocks (for example 3 on testnet) to handle reorgs.
-3. **Database:** store invoices, payments, proposals and approvals (PostgreSQL or SQLite; DynamoDB if you go the AWS route). Keep the last processed block so a restart does not miss events.
-4. **Webhook sender:** POST a JSON payload to the merchant’s URL, signed with an HMAC secret in a header, with retries and exponential backoff. Events: payment.confirmed, refund.requested, refund.executed, approval.pending.
-5. **REST API:** endpoints for the dashboard, such as GET /invoices, GET /proposals?status=pending, GET /receipts/:id.
-
-**Cloud option (fits your Cloud Computing major):** run the poller as a scheduled AWS Lambda (EventBridge), store data in DynamoDB, expose the API through API Gateway, and keep secrets in Secrets Manager. Mention this in your README as the production deployment design.
-
-## 9. Frontend
-
-Next.js with wagmi or viem and RainbowKit for wallet connection.
-
-**Customer pages**
-
-- **Checkout (/pay/\[invoiceId\]):** shows the USD price, token amount, merchant and expiry countdown. Steps: connect wallet, approve token, pay. A live status tracker shows pending, confirmed, receipt.
-- **Receipt (/receipt/\[invoiceId\]):** reads the on-chain record and links to the block explorer so the customer can verify it independently.
-
-**Merchant pages**
-
-- **Create invoice:** amount, description, expiry; generates a payment link and QR code.
-- **Dashboard:** invoices, balances, recent payments.
-- **Approvals queue:** pending proposals with approve and execute buttons and a signer progress bar (for example 1 of 2).
-- **Refunds:** requests, status, history.
-- **Settings:** signers, threshold, limits.
-
-Handle the real-world states: wrong network, wallet rejected, insufficient allowance, insufficient balance, pending transactions.
+**Differences from the original plan:** Vite/React instead of Next.js with wagmi/RainbowKit (simpler for a single-page dashboard); paying happens from the invoice list rather than a separate `/pay/[id]` checkout link with a QR code; receipts are served by the backend API and Etherscan rather than a dedicated receipt page.
 
 ## 10. Tech Stack
 
-| Layer | Choice |
+| Layer | Planned | Built |
+| --- | --- | --- |
+| Contracts | Solidity, OpenZeppelin | Solidity 0.8.34, OpenZeppelin (`ReentrancyGuard`, `IERC20`) |
+| Dev framework | Hardhat or Foundry | **Hardhat 3**, Mocha + Chai, ethers v6 |
+| Oracle | Chainlink Data Feeds | Deferred (section 7) |
+| Network | Sepolia | **Sepolia** (chain 11155111), plus a local Hardhat node for development |
+| Frontend | Next.js, wagmi, RainbowKit | **React 19, TypeScript, Vite, ethers v6, MetaMask** |
+| Backend | Node.js, ethers, Express, PostgreSQL/SQLite | **Node.js 20, Express, ethers v6, JSON-file store** |
+| RPC provider | Alchemy or Infura | **Alchemy** |
+| Security / quality | Slither, coverage, gas reporter | Hardhat coverage (100 %), gas statistics; Slither not run |
+| Secrets | Environment variables | **Hardhat encrypted keystore** for the RPC URL and deployer key |
+
+## 11. Team Roles
+
+| Area | Responsibilities | Member |
+| --- | --- | --- |
+| Smart contracts | Token, payment gateway, multi-sig | *(fill in)* |
+| Testing and security | Unit, integration and attack tests, coverage, deployment scripts | *(fill in)* |
+| Backend | Indexer, API, webhooks, demo receiver | *(fill in)* |
+| Frontend | Dashboard pages, wallet flows, demo polish | *(fill in)* |
+
+## 12. How the Project Was Built (phases as executed)
+
+### Phase 0: Setup
+Repository with `contracts`, `test`, `scripts`, `backend`, `frontend` and `docs`; Hardhat 3, MetaMask, an Alchemy RPC key, and separate test wallets for the deployer, three owners and a customer.
+
+### Phase 1: Core contracts
+`MockStablecoin`, `MerchantPayment` (create and pay invoices, receipts as events) and the first tests. **Done when:** a test creates an invoice, pays it and reads back the receipt. ✅
+
+### Phase 2: Multi-sig and refunds
+`MultiSigWallet` (submit / approve / execute), the "multi-sig is the merchant" integration, refunds as multi-sig transfers, partial refunds, and the compromised-owner attack test. **Done when:** every refund and withdrawal path passes tests. ✅
+
+### Phase 3: Hardening and deployment
+Edge-case and validation tests (30 total, 100 % coverage), a gas report, a deploy script that writes addresses for the backend and frontend, and a **preflight check** that refuses to deploy on the wrong chain, with a public test key, without funds, or with an invalid owner list. Deployed to Sepolia. **Done when:** the live contracts can be used from the dashboard. ✅
+
+### Phase 4: Backend
+Indexer with confirmations and restart recovery, JSON store, HMAC-signed webhooks with retries, REST API, demo receiver. **Done when:** paying an invoice on-chain triggers a confirmed webhook. ✅ (verified on Sepolia)
+
+### Phase 5: Frontend and integration
+Dashboard with wallet connection, invoice proposals, payment, approvals queue and activity log, wired to the backend and the Sepolia contracts. **Done when:** a payment and an approval can be completed from the UI. ✅
+
+### Phase 6: Documentation and presentation
+README with architecture, setup, live addresses and troubleshooting; a complete project guide; this as-built plan; a demo script (`docs/DEMO_SCRIPT.md`).
+
+## 13. Testing and Security Results
+
+| Area | Result |
 | --- | --- |
-| Contracts | Solidity, OpenZeppelin |
-| Dev framework | Hardhat (JavaScript friendly) or Foundry (faster tests, fuzzing) |
-| Oracle | Chainlink Data Feeds on Sepolia |
-| Network | Sepolia testnet (free test ETH from faucets) |
-| Frontend | Next.js, TypeScript, wagmi/viem, RainbowKit, Tailwind |
-| Backend | Node.js, ethers, Express, PostgreSQL or SQLite |
-| Security | Slither, solidity-coverage, gas reporter |
-| Hosting | Vercel for frontend; Render, Railway or AWS for backend |
-| Repo and docs | GitHub monorepo, README with architecture diagram |
+| Contract tests | **30 passing** (Mocha + Chai on Hardhat) |
+| Coverage | **100 %** lines and statements on all three contracts |
+| Backend tests | 5 passing (webhook signing and backoff) |
 
-## 11. Suggested Team Roles
+**What is tested**
 
-- **Smart contract lead:** gateway, multi-sig, refunds, Chainlink integration
-- **Testing and security lead:** unit and fuzz tests, Slither, deployment scripts, report on findings
-- **Backend lead:** indexer, database, webhooks, API
-- **Frontend lead:** checkout, dashboard, wallet flows, demo polish
+- **Core flow:** token transfer, invoice payment, multi-sig execution after 2 approvals, rejection without enough approvals, rejection of duplicate approvals.
+- **Edge cases:** zero amount, unknown invoice, double payment, merchant paying their own invoice, missing allowance or balance, zero-address token.
+- **Multi-sig validation:** fewer than 2 owners, invalid threshold, duplicate or zero owners, non-owner submit / approve / execute, unknown transaction, double execution, failed inner call, event arguments.
+- **Integration and attacks:** the multi-sig creates an invoice and receives the payment; a refund needs 2 of 3; partial refunds; **a single compromised owner cannot drain the funds**.
 
-With fewer people, merge roles, but every member should be able to explain the whole system in the viva.
+**Gas (local Hardhat network, unoptimised)**
 
-## 12. Step-by-Step Plan
-
-### Phase 0: Setup and Learning (before and during Week 1)
-
-1. Create the GitHub repo with folders: contracts, backend, frontend, docs. Add a README skeleton now.
-2. Install Node.js, Hardhat (or Foundry), MetaMask. Create two or three separate test wallets for the demo signers and never reuse a wallet that ever holds real money.
-3. Get an RPC key (Alchemy or Infura) and collect Sepolia test ETH from faucets for each wallet.
-4. Learn the basics: Solidity by Example, CryptoZombies, OpenZeppelin ERC-20 docs, Chainlink Data Feeds docs. Aim for one small deployed contract (store and read a number) to confirm your toolchain works.
-5. Write a one-page spec: actors (customer, merchant, signer), user stories, the invoice and refund state diagrams. Get the whole team to agree.
-
-### Phase 1: Core Payment Contracts (Week 1 to 2)
-
-1. Write MockStablecoin (OpenZeppelin ERC-20, 6 decimals, mint function).
-2. Write the Merchant and Invoice structs, registerMerchant and createInvoice.
-3. Add the Chainlink integration with a MockAggregator for tests. Implement the quote formula and staleness checks.
-4. Implement payInvoice with the approve and transferFrom flow, events, and the Paid status.
-5. Write unit tests as you go: happy path, expired invoice, double payment, wrong status, unauthorised caller, stale price.
-6. **Done when:** a test can create an invoice, pay it, and read back a correct receipt.
-
-### Phase 2: Multi-Sig and Refunds (Week 2 to 3)
-
-1. Implement the Proposal struct, proposeWithdrawal, approveProposal, executeProposal.
-2. Add tiered thresholds (auto limit versus M-of-N) and the time-lock.
-3. Implement requestRefund with the refund window and partial refunds; route large refunds through proposals.
-4. Add signer management through multi-sig proposals.
-5. Add ReentrancyGuard, Pausable and custom errors.
-6. Tests: approval counting, duplicate approvals, non-signer approval, executing early, executing twice, time-lock, over-refund, reentrancy attack contract.
-7. **Done when:** all refund and withdrawal paths pass tests and the state machine matches your diagram.
-
-### Phase 3: Hardening and Deployment (Week 3)
-
-1. Run solidity-coverage and aim for 90 percent or more on the gateway.
-2. Add fuzz or property tests (balance accounting always equals the sum of paid minus refunded minus withdrawn).
-3. Run Slither, fix real findings, and document each finding and your decision (this write-up is gold on a CV).
-4. Write a deploy script. Deploy to Sepolia and verify the source on Etherscan.
-5. Save deployed addresses and the ABI into a shared config file used by backend and frontend.
-6. **Done when:** a teammate can interact with the live contract from a script.
-
-### Phase 4: Backend (Week 4)
-
-1. Build the listener for all gateway events and test it against the Sepolia deployment.
-2. Add the database schema and last-processed-block tracking.
-3. Add confirmation waiting and reorg handling.
-4. Build the HMAC-signed webhook sender with retries.
-5. Build the REST API for the dashboard.
-6. Build a tiny fake merchant server that receives webhooks, so you can demo the full loop.
-7. **Done when:** paying an invoice on-chain triggers a confirmed webhook within seconds.
-
-### Phase 5: Frontend and Integration (Week 4 to 5)
-
-1. Set up Next.js, wallet connection and the network guard.
-2. Build checkout (approve, pay, status tracker) and the receipt page.
-3. Build the merchant dashboard, create-invoice form and QR link.
-4. Build the approvals queue and the refund screens.
-5. Handle every error state listed in section 9.
-6. Deploy the frontend to Vercel pointing at Sepolia.
-7. **Done when:** a non-developer can complete a payment and a refund approval without help.
-
-### Phase 6: Polish, Docs and Presentation (Week 5 to 6)
-
-1. Record a 3 to 5 minute demo video (script in section 14).
-2. Finish the README: problem, architecture diagram, how to run locally, deployed links, test and coverage results, security notes, limitations.
-3. Write the project report and slides using the sections of this document.
-4. Clean the repo: remove secrets, add a .env.example, add a LICENSE.
-5. Rehearse the viva with the questions in section 18.
-
-## 13. Testing and Security Plan
-
-- **Unit tests:** every function, every revert path
-- **Scenario tests:** full lifecycle, create then pay then partial refund then withdrawal
-- **Fuzz and invariant tests:** balances always reconcile; no one can withdraw more than the merchant balance
-- **Attack tests:** reentrancy via a malicious token, front-running of approvals, replay of signatures (if EIP-712)
-- **Static analysis:** Slither, plus a manual review against the SWC and OpenZeppelin guidance
-- **Gas report:** note the cost of payInvoice and execute functions
-- **Integration test:** script that runs contract, backend and webhook together
-
-**Never** commit private keys or RPC keys. Use environment variables and a .gitignore from the first commit.
-
-## 14. Demo Script (for the video and the viva)
-
-1. Merchant registers with 3 signers, a threshold of 2 and an auto limit of 100 USD.
-2. Merchant creates a 50 USD invoice and a 500 USD invoice; the dashboard shows two payment links.
-3. A customer opens the first link, approves the token, pays. The page shows the receipt; the merchant server receives the confirmed webhook.
-4. Show the transaction and event on Etherscan to prove the receipt is public and permanent.
-5. Customer requests a refund on the 500 USD invoice. It exceeds the auto limit, so it appears in the approvals queue.
-6. Signer 1 approves: the progress shows 1 of 2 and execute is blocked. Show the failed execute attempt.
-7. Signer 2 approves, then execute succeeds and the customer receives the refund; a refund webhook fires.
-8. Show an attack that fails: a non-signer tries to approve and is rejected by the contract.
-
-## 15. Deliverables Checklist
-
-- GitHub repo with clean structure and meaningful commit history from all members
-- Verified contracts on Sepolia with address links
-- Live frontend link and a demo video
-- README with architecture diagram, setup steps and results
-- Test and coverage report, Slither findings and fixes
-- Project report and presentation slides
-- A short limitations and future-work section (be honest)
-
-## 16. Making It CV-Ready
-
-**Resume bullets (adapt with your real numbers):**
-
-- Built a multi-signature merchant payment gateway (Solidity, Hardhat, Next.js) with threshold-based approvals, on-chain receipts and refund workflows, deployed and verified on Sepolia.
-- Integrated Chainlink price feeds with staleness and peg checks to quote USD invoices in stablecoin.
-- Developed an event-driven backend issuing HMAC-signed webhooks with confirmation handling and retries.
-- Achieved over 90 percent test coverage including fuzz and reentrancy tests; resolved static-analysis findings from Slither.
-
-**Portfolio tips**
-
-- Pin the repo on GitHub and add the demo video or GIF at the top of the README.
-- Write a short LinkedIn or blog post on one lesson, such as oracle staleness or why multi-sig matters.
-- Be ready to explain every design choice; recruiters ask why, not just what.
-
-## 17. Stretch Goals and Risks
-
-**Stretch goals (pick one or two, only after the core works)**
-
-- EIP-712 off-chain signature approvals
-- Pay in ETH using the ETH/USD feed
-- GatewayFactory with one gateway per merchant
-- Subscription or pull payments
-- Account abstraction (ERC-4337) for gasless checkout
-- Multi-currency dashboard using FX data
-
-**Risks and mitigations**
-
-| Risk | Mitigation |
+| Operation | Gas |
 | --- | --- |
-| Scope creep | Freeze the core feature list in week 1; stretch goals only after Phase 3 |
-| Faucet limits or slow testnet | Request test ETH early; keep a local Hardhat network for development |
-| Oracle stale or unavailable on testnet | Staleness checks plus a mock feed in tests and a fallback flag for demos |
-| Smart-contract bugs | Tests first for money paths, Slither, small readable contracts |
-| Team members idle or blocked | Define interfaces and ABIs early so frontend and backend can work against mocks |
+| `createInvoice` | 75,676 – 92,788 |
+| `payInvoice` | 84,482 – 94,082 |
+| `mUSDC.approve` | 46,708 |
+| `submitTransaction` | 84,310 – 156,966 |
+| `approveTransaction` | 62,500 – 79,612 |
+| `executeTransaction` | 65,726 – 146,821 |
 
-## 18. Viva Questions to Prepare
+**Not done:** Slither static analysis and fuzz / invariant tests (future work).
 
-1. Why use blockchain here instead of a normal database and a payment API?
-2. What exactly is stored on-chain, and what is deliberately off-chain, and why?
-3. How does multi-sig prevent a single compromised key from draining funds?
-4. Why must a customer call approve before pay? What can go wrong with unlimited allowances?
-5. What happens if the Chainlink price is stale or the stablecoin depegs?
-6. How did you prevent reentrancy and double approvals?
-7. How does your backend handle chain reorgs and missed events?
-8. What are the limitations (gas costs, key management, regulation, chargebacks) and how would you improve it for production?
+## 14. Deployment (Sepolia)
+
+| Contract | Address |
+| --- | --- |
+| MockStablecoin (mUSDC) | `0x59f961E1d23492e0ae36756cFde740e45EB7DbE5` |
+| MerchantPayment | `0xc8c10314C73c43D2597509B2a47C94A9E37a748a` |
+| MultiSigWallet (2-of-3) | `0xb596578E1F5F17659478a756AdAf099d2738d35b` |
+
+Deployed on 4 November 2026 from block 12,062,835 for about 0.024 SepoliaETH.
+
+**Safe deployment process**
+
+- Secrets (RPC URL, deployer key) are kept in Hardhat's **encrypted keystore**, never in files or the repository.
+- The Hardhat network config is pinned to **chain ID 11155111**, so it refuses to send anything to any other chain (including mainnet).
+- A **preflight check** (`npm run check:sepolia`) runs before anything is signed: it verifies the chain, rejects public Hardhat test keys, checks the deployer's balance, validates the owner addresses, and prints where each secret was loaded from.
+
+**End-to-end run on Sepolia (verifiable on Etherscan)**
+
+1. Owner 1 proposed `createInvoice(500 mUSDC)` through the multi-sig.
+2. Owners 1 and 2 approved; the proposal was executed, creating invoice #0 with the multi-sig as merchant.
+3. The customer approved and paid 500 mUSDC, which landed in the multi-sig.
+4. The backend issued receipt `RCPT-0000` and delivered a signed `payment.confirmed` webhook.
+
+Transaction links are in the README's *Live deployment* section.
+
+**Practical lessons from the testnet**
+
+- Alchemy's free tier limits `eth_getLogs` to 10 blocks per request, and MetaMask's RPC to 10,000; the indexer and the dashboard both query in chunks.
+- MetaMask's default priority fee on Sepolia is high relative to faucet balances; a manual fee (max base fee 0.1 gwei, priority fee 0.01 gwei) cuts the cost of each transaction by about 100×.
+
+## 15. Demo Script (summary)
+
+Full script with timings, what to say and fallbacks: **`docs/DEMO_SCRIPT.md`**.
+
+1. Show the live Overview (treasury balance, received, recent activity).
+2. Owner 1 proposes a 50 mUSDC invoice; show that **Execute is blocked** at 1 of 2 approvals.
+3. Owner 2 approves and executes; the invoice now exists with the treasury as merchant.
+4. The customer pays; the merchant server receives a signed `payment.confirmed` webhook.
+5. Open the payment on Etherscan from the Activity page: the receipt is public and permanent.
+6. A refund proposal needs 2 of 3 as well; the server receives `refund.executed`.
+7. A non-owner cannot approve anything, and one compromised owner cannot drain funds (shown by the test).
+
+## 16. Planned vs Delivered
+
+| Planned | Delivered |
+| --- | --- |
+| Smart contracts on an Ethereum testnet | ✅ Three contracts on Sepolia |
+| Stablecoin payments with on-chain receipts | ✅ |
+| M-of-N approvals for refunds and withdrawals | ✅ 2-of-3 for every treasury action, including invoice creation |
+| Backend listener with confirmations, webhooks and REST API | ✅ (plus more webhook events and replay protection than planned) |
+| Merchant dashboard with an approvals queue | ✅ Overview, Invoices, Approvals, Activity |
+| Tests and coverage | ✅ 30 tests, 100 % coverage, attack tests, gas report |
+| Safe deployment tooling | ✅ Beyond the plan: preflight checks and encrypted keystore |
+| Chainlink USD pricing and peg check | ❌ Deferred: invoices are priced in the stablecoin |
+| Dedicated refund function with refund window; invoice expiry | ❌ Refunds are multi-sig transfers |
+| Amount-based approval tiers and time-lock | ❌ Flat 2-of-3 |
+| Pausable, SafeERC20, signer management, proposal cancel | ❌ |
+| Separate checkout and receipt pages with QR links | ❌ Pay from the invoice list; receipts via API and Etherscan |
+| Slither report, fuzz tests | ❌ |
+| Hosted frontend, verified contract source | ❌ Runs locally; source verification pending |
+
+## 17. Limitations and Future Work
+
+**Known limitations**
+
+- Learning project, **not audited**; testnet only.
+- Every action needs the same 2-of-3 approval: no amount-based tiers and no time-lock on large withdrawals.
+- The multi-sig cannot change owners or the threshold, revoke an approval or cancel a proposal.
+- `MerchantPayment` has no invoice expiry and no dedicated refund function, and lets any address create invoices; "merchant = the multi-sig" is enforced by the dashboard, not by the contract.
+- Prices are fixed in mUSDC; no oracle or fiat conversion.
+- The backend uses a JSON file and its API has no authentication.
+
+**Future work (in priority order)**
+
+1. A dedicated `refund()` with a refund window and partial-refund status, with payments held in escrow by the gateway.
+2. Time-locks for large withdrawals and amount-based approval tiers, plus proposal cancel.
+3. Chainlink USD pricing with staleness and depeg checks.
+4. EIP-712 off-chain approvals so owners pay no gas.
+5. Owner and threshold management through the multi-sig; `Pausable` emergency stop.
+6. Slither analysis and invariant tests; Etherscan source verification.
+7. Checkout and receipt pages with payment links and QR codes; hosted deployment (Vercel for the frontend; AWS Lambda + DynamoDB + API Gateway for the backend).
+
+## 18. Viva Questions and Answers
+
+1. **Why use blockchain here instead of a normal database and a payment API?** Receipts can't be edited by anyone, including us, and the 2-of-3 rule is enforced by code no admin can bypass. Settlement is instant and cheap.
+2. **What is stored on-chain, and what is deliberately off-chain?** Money, invoices, receipts, owners and approvals are on-chain. Indexing, webhooks and dashboard lists are off-chain for speed. No personal data is on-chain.
+3. **How does multi-sig prevent a single compromised key from draining funds?** Execution requires at least 2 approvals and each owner can approve once, so one key is never enough. A test proves it.
+4. **Why must a customer call approve before pay? What can go wrong with unlimited allowances?** ERC-20 tokens can only be pulled with permission. Quorum approves the exact invoice amount; an unlimited allowance would let a buggy or compromised gateway take everything.
+5. **What happens if the stablecoin depegs?** Prices are fixed in mUSDC, so a depeg would change the real value received. A Chainlink peg check is planned future work.
+6. **How did you prevent reentrancy and double approvals?** `ReentrancyGuard` and checks-effects-interactions on payment; `executed` is set before the external call; the `approved[id][owner]` mapping blocks double approvals.
+7. **How does your backend handle chain reorgs and missed events?** It waits 3 confirmations, saves the last processed block, and de-duplicates by `txHash:logIndex`, so a restart catches up exactly.
+8. **What are the limitations and how would you improve it for production?** See section 17: tiers and time-locks, a dedicated refund flow, an oracle, an audit, a real database with API authentication, and hosted deployment.
 
 ## 19. Learning Resources
 
 - Solidity by Example and the official Solidity docs
-- OpenZeppelin Contracts documentation (ERC-20, ReentrancyGuard, AccessControl, EIP-712)
-- Chainlink Data Feeds documentation
-- Hardhat or Foundry Book tutorials
+- OpenZeppelin Contracts documentation (ERC-20, ReentrancyGuard)
+- Hardhat 3 documentation (testing, coverage, keystore, verification)
 - Ethereum.org developer docs on gas, events and transactions
-- Slither documentation and the Smart Contract Weakness Classification (SWC) registry
-- Safe (Gnosis Safe) documentation, to study how a production multi-sig is designed
+- Safe (Gnosis Safe) documentation, for how a production multi-sig is designed
+- Chainlink Data Feeds documentation (for the planned oracle integration)
