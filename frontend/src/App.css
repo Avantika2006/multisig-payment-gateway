@@ -1692,3 +1692,15 @@ button {
     justify-content: flex-start;
   }
 }
+
+/* ACTIVITY TIMELINE */
+.activity-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  white-space: nowrap;
+}
+
+.activity-title svg {
+  color: var(--rose);
+}

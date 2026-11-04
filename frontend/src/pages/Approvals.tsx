@@ -1,6 +1,5 @@
 
 import { useEffect, useState } from "react";
-import { ethers } from "ethers";
 import {
   ShieldCheck,
   RefreshCw,
@@ -8,29 +7,26 @@ import {
   Send,
   Play,
   Loader2,
+  History,
 } from "lucide-react";
 
 import { useWallet } from "../context/WalletContext";
 import { getMultiSigWalletContract } from "../utils/contracts";
+import {
+  isOwnerOf,
+  loadMultisigInfo,
+  loadProposals,
+  type MultisigInfo,
+  type Proposal,
+} from "../utils/multisig";
 import ProposePanel from "../components/ProposePanel";
 import { describeTransaction } from "../utils/describeTransaction";
-
-interface MultisigTransaction {
-  id: number;
-  to: string;
-  value: string;
-  data: string;
-  executed: boolean;
-  approvalCount: number;
-}
 
 export default function Approvals() {
   const { account, provider, connectWallet } = useWallet();
 
-  const [transactions, setTransactions] =
-    useState<MultisigTransaction[]>([]);
-  const [owners, setOwners] = useState<string[]>([]);
-  const [required, setRequired] = useState(0);
+  const [proposals, setProposals] = useState<Proposal[]>([]);
+  const [info, setInfo] = useState<MultisigInfo | null>(null);
   const [loading, setLoading] = useState(false);
   const [busyId, setBusyId] = useState<number | null>(null);
   const [error, setError] = useState("");
@@ -43,38 +39,15 @@ export default function Approvals() {
       setLoading(true);
       setError("");
 
-      const contract = getMultiSigWalletContract(provider);
-
-      const [ownerList, threshold, count] = await Promise.all([
-        contract.getOwners(),
-        contract.requiredApprovals(),
-        contract.getTransactionCount(),
+      const [multisig, list] = await Promise.all([
+        loadMultisigInfo(provider),
+        loadProposals(provider, account),
       ]);
-
-      setOwners(ownerList);
-      setRequired(Number(threshold));
-
-      const allTransactions: MultisigTransaction[] = [];
-
-      for (let i = 0; i < Number(count); i++) {
-        const tx = await contract.getTransaction(i);
-
-        allTransactions.push({
-          id: i,
-          to: tx.to,
-          value: ethers.formatEther(tx.value),
-          data: tx.data,
-          executed: tx.executed,
-          approvalCount: Number(tx.approvalCount),
-        });
-      }
-
-      setTransactions(allTransactions.reverse());
+      setInfo(multisig);
+      setProposals(list);
     } catch (err) {
       console.error(err);
-      setError(
-        "Unable to load multisig data. Check your local blockchain."
-      );
+      setError("Unable to load multisig data. Check that your wallet is on the right network.");
     } finally {
       setLoading(false);
     }
@@ -84,7 +57,7 @@ export default function Approvals() {
     loadData();
   }, [provider, account]);
 
-  async function approveTransaction(id: number) {
+  async function runAction(id: number, action: "approve" | "execute") {
     if (!provider || !account) {
       setError("Connect your wallet first.");
       return;
@@ -98,49 +71,28 @@ export default function Approvals() {
       const signer = await provider.getSigner();
       const contract = getMultiSigWalletContract(signer);
 
-      const tx = await contract.approveTransaction(id);
+      const tx =
+        action === "approve"
+          ? await contract.approveTransaction(id)
+          : await contract.executeTransaction(id);
       await tx.wait();
 
-      setSuccess(`Transaction #${id} approved successfully.`);
+      setSuccess(`Proposal #${id} ${action === "approve" ? "approved" : "executed"} successfully.`);
       await loadData();
     } catch (err: any) {
-      setError(err?.reason || err?.shortMessage || err?.message || "Approval failed.");
+      setError(
+        err?.reason || err?.shortMessage || err?.message ||
+          (action === "approve" ? "Approval failed." : "Execution failed.")
+      );
     } finally {
       setBusyId(null);
     }
   }
 
-  async function executeTransaction(id: number) {
-    if (!provider || !account) {
-      setError("Connect your wallet first.");
-      return;
-    }
-
-    try {
-      setBusyId(id);
-      setError("");
-      setSuccess("");
-
-      const signer = await provider.getSigner();
-      const contract = getMultiSigWalletContract(signer);
-
-      const tx = await contract.executeTransaction(id);
-      await tx.wait();
-
-      setSuccess(`Transaction #${id} executed successfully.`);
-      await loadData();
-    } catch (err: any) {
-      setError(err?.reason || err?.shortMessage || err?.message || "Execution failed.");
-    } finally {
-      setBusyId(null);
-    }
-  }
-
-  const isOwner =
-    account &&
-    owners.some(
-      (owner) => owner.toLowerCase() === account.toLowerCase()
-    );
+  const required = info?.required ?? 0;
+  const isOwner = isOwnerOf(info, account);
+  const pending = proposals.filter((p) => !p.executed);
+  const executed = proposals.filter((p) => p.executed);
 
   return (
     <div className="page-container">
@@ -149,7 +101,7 @@ export default function Approvals() {
           <p className="eyebrow">MULTI-SIGNATURE SECURITY</p>
           <h1>Approvals</h1>
           <p className="page-subtitle">
-            Review, approve, and execute multisig transactions.
+            Every invoice, refund and withdrawal needs {required || "M"} owner approvals.
           </p>
         </div>
 
@@ -166,12 +118,12 @@ export default function Approvals() {
       <div className="approval-summary-grid">
         <section className="panel">
           <span className="muted-text">Required approvals</span>
-          <h2>{required} of {owners.length} owners</h2>
+          <h2>{required} of {info?.owners.length ?? 0} owners</h2>
         </section>
 
         <section className="panel">
-          <span className="muted-text">Pending transactions</span>
-          <h2>{transactions.filter((tx) => !tx.executed).length}</h2>
+          <span className="muted-text">Waiting for approval</span>
+          <h2>{pending.length}</h2>
         </section>
       </div>
 
@@ -181,104 +133,144 @@ export default function Approvals() {
         </button>
       )}
 
-      {account && !isOwner && (
+      {account && info && !isOwner && (
         <div className="form-error">
-          Your connected wallet is not a multisig owner.
+          Your connected wallet is not a multisig owner, so you can view proposals but not approve them.
         </div>
       )}
 
       {error && <div className="form-error">{error}</div>}
       {success && <div className="success-message">{success}</div>}
 
-      <ProposePanel isOwner={Boolean(isOwner)} onSubmitted={loadData} />
+      <section className="panel">
+        <div className="panel-heading">
+          <h3>
+            <ShieldCheck size={18} /> Waiting for approval
+          </h3>
+        </div>
+
+        {loading && proposals.length === 0 ? (
+          <div className="empty-state">Loading proposals...</div>
+        ) : pending.length === 0 ? (
+          <div className="empty-state">
+            <Send size={32} />
+            <h3>Nothing to approve</h3>
+            <p>New invoices, refunds and withdrawals will appear here.</p>
+          </div>
+        ) : (
+          <div className="approval-list">
+            {pending.map((tx) => {
+              const { title, detail } = describeTransaction(tx.to, tx.value, tx.data);
+              const ready = tx.approvalCount >= required;
+
+              return (
+                <div className="approval-card" key={tx.id}>
+                  <div className="approval-card-header">
+                    <div>
+                      <span className="muted-text">Proposal #{tx.id}</span>
+                      <h3>{title}</h3>
+                    </div>
+
+                    <span
+                      className={`status-badge ${ready ? "completed-badge" : "pending-badge"}`}
+                    >
+                      {ready ? "Ready to execute" : "Needs approvals"}
+                    </span>
+                  </div>
+
+                  <div className="approval-details">
+                    <span>Target</span>
+                    <strong>{detail}</strong>
+                  </div>
+
+                  <div className="approval-details">
+                    <span>Approvals</span>
+                    <strong>
+                      {tx.approvalCount} / {required}
+                      {tx.approvedByMe && " · including you"}
+                    </strong>
+                  </div>
+
+                  <div className="approval-progress">
+                    <div
+                      style={{
+                        width: `${Math.min(100, (tx.approvalCount / Math.max(required, 1)) * 100)}%`,
+                      }}
+                    />
+                  </div>
+
+                  {isOwner && (
+                    <div className="approval-actions">
+                      <button
+                        className="secondary-button"
+                        disabled={busyId === tx.id || tx.approvedByMe}
+                        onClick={() => runAction(tx.id, "approve")}
+                      >
+                        {busyId === tx.id ? (
+                          <Loader2 size={16} className="spin-icon" />
+                        ) : (
+                          <CheckCircle2 size={16} />
+                        )}
+                        {tx.approvedByMe ? "You approved" : "Approve"}
+                      </button>
+
+                      <button
+                        className="primary-button"
+                        disabled={busyId === tx.id || !ready}
+                        onClick={() => runAction(tx.id, "execute")}
+                      >
+                        <Play size={16} />
+                        Execute
+                      </button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </section>
+
+      {isOwner && <ProposePanel isOwner={isOwner} onSubmitted={loadData} />}
 
       <section className="panel">
         <div className="panel-heading">
           <h3>
-            <ShieldCheck size={18} /> Submitted transactions
+            <History size={18} /> Executed proposals
           </h3>
+          <span className="muted-text">{executed.length} total</span>
         </div>
 
-        {loading ? (
-          <div className="empty-state">Loading transactions...</div>
-        ) : transactions.length === 0 ? (
+        {executed.length === 0 ? (
           <div className="empty-state">
-            <Send size={32} />
-            <h3>No transactions submitted</h3>
-            <p>Multisig transactions will appear here.</p>
+            <p>No proposals executed yet.</p>
           </div>
         ) : (
-          <div className="approval-list">
-            {transactions.map((tx) => (
-              <div className="approval-card" key={tx.id}>
-                <div className="approval-card-header">
-                  <div>
-                    <span className="muted-text">Transaction #{tx.id}</span>
-                    <h3>{describeTransaction(tx.to, tx.value, tx.data).title}</h3>
-                  </div>
-
-                  <span
-                    className={`status-badge ${
-                      tx.executed ? "completed-badge" : "pending-badge"
-                    }`}
-                  >
-                    {tx.executed ? "Executed" : "Pending"}
-                  </span>
-                </div>
-
-                <div className="approval-details">
-                  <span>Recipient</span>
-                  <strong>{describeTransaction(tx.to, tx.value, tx.data).detail}</strong>
-                </div>
-
-                <div className="approval-details">
-                  <span>Approvals</span>
-                  <strong>
-                    {tx.approvalCount} / {required}
-                  </strong>
-                </div>
-
-                <div className="approval-progress">
-                  <div
-                    style={{
-                      width: `${Math.min(
-                        100,
-                        (tx.approvalCount / Math.max(required, 1)) * 100
-                      )}%`,
-                    }}
-                  />
-                </div>
-
-                {!tx.executed && isOwner && (
-                  <div className="approval-actions">
-                    <button
-                      className="secondary-button"
-                      disabled={busyId === tx.id}
-                      onClick={() => approveTransaction(tx.id)}
-                    >
-                      {busyId === tx.id ? (
-                        <Loader2 size={16} className="spin-icon" />
-                      ) : (
-                        <CheckCircle2 size={16} />
-                      )}
-                      Approve
-                    </button>
-
-                    <button
-                      className="primary-button"
-                      disabled={
-                        busyId === tx.id ||
-                        tx.approvalCount < required
-                      }
-                      onClick={() => executeTransaction(tx.id)}
-                    >
-                      <Play size={16} />
-                      Execute
-                    </button>
-                  </div>
-                )}
-              </div>
-            ))}
+          <div className="table-wrapper">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Proposal</th>
+                  <th>Action</th>
+                  <th>Approvals</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {executed.map((tx) => (
+                  <tr key={tx.id}>
+                    <td>#{tx.id}</td>
+                    <td>{describeTransaction(tx.to, tx.value, tx.data).title}</td>
+                    <td>
+                      {tx.approvalCount} / {required}
+                    </td>
+                    <td>
+                      <span className="status-badge completed-badge">Executed</span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         )}
       </section>

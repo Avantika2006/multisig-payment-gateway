@@ -1,46 +1,72 @@
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ethers } from "ethers";
 import {
   FilePlus2,
-  Wallet,
+  Landmark,
   CircleCheck,
-  Copy,
   Loader2,
   ArrowLeft,
   ShieldCheck,
+  Wallet,
 } from "lucide-react";
 
 import { useWallet } from "../context/WalletContext";
-import { getMerchantPaymentContract } from "../utils/contracts";
+import { getMerchantPaymentContract, shortenAddress } from "../utils/contracts";
+import { isOwnerOf, loadMultisigInfo, submitProposal, type MultisigInfo } from "../utils/multisig";
 import InvoiceHistory from "../components/InvoiceHistory";
+import { CONTRACT_ADDRESSES } from "../../contractAddresses";
 
-function CreateInvoice() {
+/**
+ * Invoices are always created BY the multisig (as a proposal), so every payment
+ * lands in the treasury and no single owner can create one alone.
+ */
+function CreateInvoice({ onNavigate }: { onNavigate: (page: string) => void }) {
   const { account, provider, connectWallet } = useWallet();
 
+  const [info, setInfo] = useState<MultisigInfo | null>(null);
   const [amount, setAmount] = useState("");
-  const [description, setDescription] = useState("");
+  const [autoApprove, setAutoApprove] = useState(true);
   const [isCreating, setIsCreating] = useState(false);
-  const [createdInvoice, setCreatedInvoice] = useState<{
+  const [proposal, setProposal] = useState<{
     id: string;
     amount: string;
-    merchant: string;
+    approved: boolean;
   } | null>(null);
-
   const [error, setError] = useState("");
-  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    if (!provider) return;
+    loadMultisigInfo(provider)
+      .then(setInfo)
+      .catch((err) => console.error("Could not read multisig owners:", err));
+  }, [provider]);
+
+  const isOwner = isOwnerOf(info, account);
 
   async function handleCreateInvoice(e: React.FormEvent) {
     e.preventDefault();
     setError("");
-    setCreatedInvoice(null);
+    setProposal(null);
 
     if (!account || !provider) {
       setError("Please connect your MetaMask wallet first.");
       return;
     }
+    if (!isOwner) {
+      setError("Only treasury owners can create invoices.");
+      return;
+    }
 
-    if (!amount || Number(amount) <= 0) {
+    let parsedAmount: bigint;
+    try {
+      // Mock stablecoin uses 6 decimal places
+      parsedAmount = ethers.parseUnits(amount || "0", 6);
+    } catch {
+      setError("Enter a valid amount (max 6 decimals).");
+      return;
+    }
+    if (parsedAmount <= 0n) {
       setError("Please enter a valid invoice amount.");
       return;
     }
@@ -48,262 +74,214 @@ function CreateInvoice() {
     try {
       setIsCreating(true);
 
-      const signer = await provider.getSigner();
-      const contract = getMerchantPaymentContract(signer);
+      const data = getMerchantPaymentContract(provider).interface.encodeFunctionData(
+        "createInvoice",
+        [parsedAmount]
+      );
+      const id = await submitProposal(
+        provider,
+        CONTRACT_ADDRESSES.MERCHANT_PAYMENT,
+        data,
+        autoApprove
+      );
 
-      // Mock stablecoin uses 6 decimal places
-      const parsedAmount = ethers.parseUnits(amount, 6);
-
-      // Create invoice on the blockchain
-      const tx = await contract.createInvoice(parsedAmount);
-
-      // Wait for blockchain confirmation
-      const receipt = await tx.wait();
-
-      if (!receipt) {
-        throw new Error("Transaction confirmation failed.");
-      }
-
-      // Read the latest invoice ID from the contract
-      const nextId = await contract.nextInvoiceId();
-      const invoiceId = (nextId - 1n).toString();
-
-      setCreatedInvoice({
-        id: invoiceId,
-        amount,
-        merchant: account,
-      });
-
+      setProposal({ id: id.toString(), amount, approved: autoApprove });
       setAmount("");
-      setDescription("");
-    } catch (err: unknown) {
-      console.error("Invoice creation failed:", err);
-
-      if (err instanceof Error) {
-        setError(err.message);
-      } else {
-        setError("Failed to create invoice. Please try again.");
-      }
+    } catch (err: any) {
+      console.error("Invoice proposal failed:", err);
+      setError(err?.reason || err?.shortMessage || err?.message || "Failed to submit the invoice.");
     } finally {
       setIsCreating(false);
     }
   }
 
-  async function copyInvoiceDetails() {
-    if (!createdInvoice) return;
-
-    const invoiceText = `QUORUM PAYMENT REQUEST
-Invoice ID: ${createdInvoice.id}
-Amount: ${createdInvoice.amount} mUSDC
-Merchant: ${createdInvoice.merchant}`;
-
-    try {
-      await navigator.clipboard.writeText(invoiceText);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch (err) {
-      console.error("Copy failed:", err);
-    }
-  }
+  const required = info?.required ?? 2;
+  const stillNeeded = proposal ? Math.max(0, required - (proposal.approved ? 1 : 0)) : 0;
 
   return (
     <div className="invoice-page">
       <div className="page-heading">
         <div>
           <p className="eyebrow">MERCHANT WORKSPACE</p>
-          <h1>Create invoice</h1>
+          <h1>Invoices</h1>
           <p className="page-subtitle">
-            Generate a secure on-chain payment request.
+            {isOwner
+              ? "Propose new invoices for the treasury and track every payment."
+              : "Open invoices from the merchant. Pay them with mUSDC."}
           </p>
         </div>
       </div>
 
-      <div className="invoice-layout">
-        {/* FORM */}
-        <section className="panel invoice-form-panel">
-          <div className="panel-heading">
-            <h3>
-              <FilePlus2 size={19} /> Invoice details
-            </h3>
-          </div>
-
-          <form onSubmit={handleCreateInvoice}>
-            <div className="form-group">
-              <label htmlFor="invoice-amount">Invoice amount</label>
-
-              <div className="amount-input-wrapper">
-                <input
-                  id="invoice-amount"
-                  type="number"
-                  min="0.000001"
-                  step="0.000001"
-                  placeholder="0.00"
-                  value={amount}
-                  onChange={(e) => setAmount(e.target.value)}
-                  required
-                />
-
-                <span className="currency-tag">mUSDC</span>
-              </div>
-
-              <span className="form-hint">
-                Mock USD Coin · 6 decimal precision
-              </span>
+      {isOwner && (
+        <div className="invoice-layout">
+          {/* FORM */}
+          <section className="panel invoice-form-panel">
+            <div className="panel-heading">
+              <h3>
+                <FilePlus2 size={19} /> New invoice
+              </h3>
             </div>
 
-            <div className="form-group">
-              <label htmlFor="invoice-description">
-                Description <span className="optional-label">(optional)</span>
-              </label>
+            <form onSubmit={handleCreateInvoice}>
+              <div className="form-group">
+                <label htmlFor="invoice-amount">Invoice amount</label>
 
-              <textarea
-                id="invoice-description"
-                placeholder="What is this payment for?"
-                rows={3}
-                value={description}
-                onChange={(e) => setDescription(e.target.value)}
-              />
-            </div>
+                <div className="amount-input-wrapper">
+                  <input
+                    id="invoice-amount"
+                    type="number"
+                    min="0.000001"
+                    step="0.000001"
+                    placeholder="0.00"
+                    value={amount}
+                    onChange={(e) => setAmount(e.target.value)}
+                    required
+                  />
 
-            <div className="invoice-merchant-info">
-              <div className="quick-icon">
-                <Wallet size={18} />
-              </div>
+                  <span className="currency-tag">mUSDC</span>
+                </div>
 
-              <div>
-                <strong>Receiving wallet</strong>
-                <span>
-                  {account
-                    ? `${account.slice(0, 6)}...${account.slice(-4)}`
-                    : "Connect your wallet"}
+                <span className="form-hint">
+                  Mock USD Coin · 6 decimal precision
                 </span>
               </div>
-            </div>
 
-            {!account && (
-              <button
-                type="button"
-                className="secondary-button full-width"
-                onClick={connectWallet}
-              >
-                <Wallet size={17} /> Connect MetaMask
-              </button>
-            )}
+              <div className="invoice-merchant-info">
+                <div className="quick-icon">
+                  <Landmark size={18} />
+                </div>
 
-            {error && (
-              <div className="form-error">
-                {error}
-              </div>
-            )}
-
-            <button
-              type="submit"
-              className="primary-button full-width"
-              disabled={isCreating || !account}
-            >
-              {isCreating ? (
-                <>
-                  <Loader2 size={17} className="spin-icon" />
-                  Confirming on blockchain...
-                </>
-              ) : (
-                <>
-                  <FilePlus2 size={17} />
-                  Create invoice on-chain
-                </>
-              )}
-            </button>
-
-            <p className="form-hint transaction-hint">
-              <ShieldCheck size={14} />
-              This action requires MetaMask transaction approval.
-            </p>
-          </form>
-        </section>
-
-        {/* SUCCESS PANEL */}
-        <section className="panel invoice-preview-panel">
-          <div className="panel-heading">
-            <h3>Invoice preview</h3>
-          </div>
-
-          {createdInvoice ? (
-            <div className="invoice-success">
-              <div className="success-icon">
-                <CircleCheck size={28} />
-              </div>
-
-              <h2>Invoice created!</h2>
-              <p>Your payment request has been recorded on-chain.</p>
-
-              <div className="invoice-result-card">
-                <span className="result-label">Invoice ID</span>
-                <strong>#{createdInvoice.id}</strong>
-
-                <span className="result-label">Amount due</span>
-                <strong>
-                  {createdInvoice.amount} mUSDC
-                </strong>
-
-                <span className="result-label">Merchant</span>
-                <span className="result-address">
-                  {createdInvoice.merchant}
-                </span>
-
-                <div className="result-status">
-                  <span className="status-badge pending-badge">
-                    Awaiting payment
+                <div>
+                  <strong>Paid into</strong>
+                  <span>
+                    Multisig treasury {shortenAddress(CONTRACT_ADDRESSES.MULTISIG_WALLET)}
                   </span>
                 </div>
               </div>
 
-              <button
-                className="secondary-button full-width"
-                onClick={copyInvoiceDetails}
-              >
-                <Copy size={16} />
-                {copied ? "Copied!" : "Copy invoice details"}
-              </button>
+              <label className="propose-check">
+                <input
+                  type="checkbox"
+                  checked={autoApprove}
+                  onChange={(e) => setAutoApprove(e.target.checked)}
+                />
+                Also approve it as the submitter (2 wallet confirmations)
+              </label>
+
+              {error && <div className="form-error">{error}</div>}
 
               <button
-                className="text-link"
-                onClick={() => setCreatedInvoice(null)}
+                type="submit"
+                className="primary-button full-width"
+                disabled={isCreating}
               >
-                <ArrowLeft size={15} /> Create another invoice
+                {isCreating ? (
+                  <>
+                    <Loader2 size={17} className="spin-icon" />
+                    Confirming on blockchain...
+                  </>
+                ) : (
+                  <>
+                    <FilePlus2 size={17} />
+                    Propose invoice
+                  </>
+                )}
               </button>
-            </div>
-          ) : (
-            <div className="invoice-empty-preview">
-              <div className="preview-icon">
-                <FilePlus2 size={30} />
-              </div>
 
-              <h3>Your invoice will appear here</h3>
-              <p>
-                Enter an amount and submit the form to generate
-                a unique on-chain invoice.
+              <p className="form-hint transaction-hint">
+                <ShieldCheck size={14} />
+                The invoice is created once {required} owners approve it.
               </p>
+            </form>
+          </section>
 
-              <div className="preview-detail">
-                <span>Payment currency</span>
-                <strong>mUSDC</strong>
-              </div>
-
-              <div className="preview-detail">
-                <span>Payment method</span>
-                <strong>Smart contract</strong>
-              </div>
-
-              <div className="preview-detail">
-                <span>Confirmation</span>
-                <strong>MetaMask</strong>
-              </div>
+          {/* RESULT PANEL */}
+          <section className="panel invoice-preview-panel">
+            <div className="panel-heading">
+              <h3>Status</h3>
             </div>
-          )}
-        </section>
-      </div>
 
-      <InvoiceHistory refreshKey={createdInvoice?.id ?? ""} />
+            {proposal ? (
+              <div className="invoice-success">
+                <div className="success-icon">
+                  <CircleCheck size={28} />
+                </div>
+
+                <h2>Proposal #{proposal.id} submitted</h2>
+                <p>
+                  {stillNeeded > 0
+                    ? `It needs ${stillNeeded} more owner approval(s), then an owner executes it to create the invoice.`
+                    : "It has enough approvals. Execute it on the Approvals page to create the invoice."}
+                </p>
+
+                <div className="invoice-result-card">
+                  <span className="result-label">Amount</span>
+                  <strong>{proposal.amount} mUSDC</strong>
+
+                  <span className="result-label">Merchant</span>
+                  <span className="result-address">
+                    {CONTRACT_ADDRESSES.MULTISIG_WALLET}
+                  </span>
+
+                  <div className="result-status">
+                    <span className="status-badge pending-badge">
+                      Awaiting approval
+                    </span>
+                  </div>
+                </div>
+
+                <button
+                  className="secondary-button full-width"
+                  onClick={() => onNavigate("Approvals")}
+                >
+                  <ShieldCheck size={16} /> Go to Approvals
+                </button>
+
+                <button className="text-link" onClick={() => setProposal(null)}>
+                  <ArrowLeft size={15} /> Propose another invoice
+                </button>
+              </div>
+            ) : (
+              <div className="invoice-empty-preview">
+                <div className="preview-icon">
+                  <FilePlus2 size={30} />
+                </div>
+
+                <h3>How invoices work</h3>
+                <p>
+                  An owner proposes the invoice, {required} owners approve it, and it is
+                  created on-chain with the treasury as the merchant.
+                </p>
+
+                <div className="preview-detail">
+                  <span>Payment currency</span>
+                  <strong>mUSDC</strong>
+                </div>
+
+                <div className="preview-detail">
+                  <span>Approvals required</span>
+                  <strong>
+                    {required} of {info?.owners.length ?? 3} owners
+                  </strong>
+                </div>
+
+                <div className="preview-detail">
+                  <span>Funds go to</span>
+                  <strong>Multisig treasury</strong>
+                </div>
+              </div>
+            )}
+          </section>
+        </div>
+      )}
+
+      {!account && (
+        <button className="secondary-button" onClick={connectWallet}>
+          <Wallet size={17} /> Connect MetaMask
+        </button>
+      )}
+
+      <InvoiceHistory refreshKey={proposal?.id ?? ""} />
     </div>
   );
 }

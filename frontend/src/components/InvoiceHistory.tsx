@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useState } from "react";
-import { ethers } from "ethers";
 import { CreditCard, Loader2, Receipt, RefreshCw, Copy } from "lucide-react";
 
 import { useWallet } from "../context/WalletContext";
@@ -7,24 +6,11 @@ import {
   getMerchantPaymentContract,
   getMockStablecoinContract,
 } from "../utils/contracts";
-import { CONTRACT_ADDRESSES } from "../../contractAddresses";
+import { fetchInvoices, type Invoice as InvoiceRow } from "../utils/api";
+import * as deployInfo from "../../contractAddresses";
 import "./InvoiceHistory.css";
 
-// deploy.ts writes START_BLOCK so we do not scan the whole chain on Sepolia
-const START_BLOCK: number =
-  (CONTRACT_ADDRESSES as unknown as { START_BLOCK?: number }).START_BLOCK ?? 0;
-
-interface InvoiceRow {
-  id: string;
-  merchant: string;
-  amountRaw: bigint;
-  amount: string;
-  createdBlock: number;
-  createTx: string;
-  paid: boolean;
-  customer?: string;
-  payTx?: string;
-}
+const CONTRACT_ADDRESSES = deployInfo.CONTRACT_ADDRESSES;
 
 const short = (a: string) => `${a.slice(0, 6)}...${a.slice(-4)}`;
 const same = (a?: string | null, b?: string | null) =>
@@ -52,42 +38,12 @@ export default function InvoiceHistory({ refreshKey = "" }: { refreshKey?: strin
       setLoading(true);
       setError("");
 
-      const gateway = getMerchantPaymentContract(provider);
-      const [created, paid] = await Promise.all([
-        gateway.queryFilter(gateway.filters.InvoiceCreated(), START_BLOCK, "latest"),
-        gateway.queryFilter(gateway.filters.PaymentReceived(), START_BLOCK, "latest"),
-      ]);
-
-      const paidMap = new Map<string, { customer: string; tx: string }>();
-      for (const e of paid) {
-        const log = e as ethers.EventLog;
-        paidMap.set(log.args.invoiceId.toString(), {
-          customer: log.args.customer,
-          tx: log.transactionHash,
-        });
-      }
-
-      const list: InvoiceRow[] = created.map((e) => {
-        const log = e as ethers.EventLog;
-        const id = log.args.invoiceId.toString();
-        const p = paidMap.get(id);
-        return {
-          id,
-          merchant: log.args.merchant,
-          amountRaw: log.args.amount,
-          amount: ethers.formatUnits(log.args.amount, 6),
-          createdBlock: log.blockNumber,
-          createTx: log.transactionHash,
-          paid: Boolean(p),
-          customer: p?.customer,
-          payTx: p?.tx,
-        };
-      });
-
-      setRows(list.reverse());
+      setRows(await fetchInvoices(provider));
     } catch (err) {
       console.error(err);
-      setError("Could not load invoices. Check that your wallet is on the right network.");
+      setError(
+        "Could not load invoices. Start the backend (npm start in backend/) and check that your wallet is on the right network."
+      );
     } finally {
       setLoading(false);
     }
@@ -128,7 +84,8 @@ export default function InvoiceHistory({ refreshKey = "" }: { refreshKey?: strin
       const payTx = await gateway.payInvoice(row.id);
       await payTx.wait();
 
-      setSuccess(`Invoice #${row.id} paid (${row.amount} mUSDC).`);
+      // The backend waits for a few confirmations, so the "Paid" badge can lag ~1 minute.
+      setSuccess(`Invoice #${row.id} paid (${row.amount} mUSDC). It may take a minute to show as paid.`);
       await load();
     } catch (err: any) {
       setError(err?.reason || err?.shortMessage || err?.message || "Payment failed.");

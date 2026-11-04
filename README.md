@@ -264,6 +264,33 @@ Headers: `X-Quorum-Timestamp`, `X-Quorum-Signature: sha256=<hex>` where the sign
 4. Verify the source on Etherscan with the `hardhat-verify` plugin (already installed; add your Etherscan API key as a config variable) so anyone can read the contracts.
 5. Run the backend with `NETWORK=sepolia`, `RPC_URL=<your Sepolia RPC>`, `CONFIRMATIONS=3`, and point the frontend's `contractAddresses.ts` at the new addresses (the deploy script rewrites it).
 
+### Troubleshooting Sepolia deploys
+
+Run `npm run check:sepolia` first. It sends no transactions and prints which RPC URL, chain and deployer Hardhat will use, **and where each value came from**.
+
+Hardhat resolves `SEPOLIA_RPC_URL` / `SEPOLIA_PRIVATE_KEY` in this order:
+
+1. **Environment variable** (`$env:SEPOLIA_RPC_URL`, a Windows user/system variable, or one VS Code's terminal inherited)
+2. Dev keystore (`npx hardhat keystore set --dev …`)
+3. Keystore (`npx hardhat keystore set …`, password prompt)
+
+So `keystore set --force` changes nothing while an environment variable with the same name exists. Remove it:
+
+```powershell
+Remove-Item Env:SEPOLIA_RPC_URL, Env:SEPOLIA_PRIVATE_KEY -ErrorAction SilentlyContinue
+[Environment]::SetEnvironmentVariable("SEPOLIA_RPC_URL", $null, "User")
+[Environment]::SetEnvironmentVariable("SEPOLIA_PRIVATE_KEY", $null, "User")
+# then restart VS Code so new terminals stop inheriting the old values
+```
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `RPC URL reports chain 1` / `HHE708 … connected to a chain with id "1"` | The URL is Ethereum **mainnet** (`eth-mainnet…`, Alchemy's default) | Copy the **Ethereum Sepolia** URL `https://eth-sepolia.g.alchemy.com/v2/<key>` and `keystore set SEPOLIA_RPC_URL --force` |
+| Deployer `0xf39F…2266` | The private key is Hardhat's public test account #0 (copied from `npx hardhat node`) | Export your own MetaMask key and `keystore set SEPOLIA_PRIVATE_KEY --force` |
+| `code: -32000` from `signers.ts` | Usually "insufficient funds": a wrong chain or an unfunded deployer | Fix the two rows above, then fund the deployer from a Sepolia faucet |
+
+`backend/.env` is only read by the backend; Hardhat never reads it. The `sepolia` network also has `chainId: 11155111` in `hardhat.config.ts`, so Hardhat refuses to send anything to a non-Sepolia RPC.
+
 ## 11. Security notes and known limitations
 
 Implemented: checks-effects-interactions in `MultiSigWallet.executeTransaction`, owner-only access control, single-execution guard, duplicate-approval guard, input validation, and tests for the main attack paths (single compromised owner, non-owner access, replay of execution).

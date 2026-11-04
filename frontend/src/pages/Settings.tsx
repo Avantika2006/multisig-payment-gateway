@@ -6,7 +6,6 @@ import {
   Copy,
   ShieldCheck,
   Network,
-  ExternalLink,
 } from "lucide-react";
 
 import { useWallet } from "../context/WalletContext";
@@ -14,7 +13,7 @@ import { CONTRACT_ADDRESSES } from "../../contractAddresses";
 import { shortenAddress } from "../utils/contracts";
 
 export default function Settings() {
-  const { account, provider, connectWallet, disconnectWallet } = useWallet();
+  const { account, connectWallet, disconnectWallet } = useWallet();
 
   const [copied, setCopied] = useState("");
 

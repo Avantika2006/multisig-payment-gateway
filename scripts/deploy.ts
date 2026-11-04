@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { network } from "hardhat";
+import { preflight } from "./preflight.js";
 
 /**
  * Deploys MockStablecoin, MerchantPayment and a 2-of-3 MultiSigWallet, then:
@@ -15,13 +16,13 @@ async function main() {
   const connection = await network.create();
   const { ethers, networkName } = connection;
 
+  // ── Safety checks: wrong chain, public test key, no ETH, bad owner list.
+  //    All of them run BEFORE anything is signed, so a mistake costs no gas.
+  const { chainId, isLocal, owners: envOwners, required, fundList } = await preflight(connection);
+
   const signers = await ethers.getSigners();
   const [deployer, owner1, owner2] = signers;
-  const chainId = Number((await ethers.provider.getNetwork()).chainId);
   const startBlock = await ethers.provider.getBlockNumber();
-
-  console.log(`Network:  ${networkName} (chainId ${chainId})`);
-  console.log(`Deployer: ${deployer.address}\n`);
 
   // 1. MockStablecoin (6 decimals, 1,000,000 mUSDC minted to the deployer)
   const token = await ethers.deployContract("MockStablecoin");
@@ -36,12 +37,8 @@ async function main() {
   console.log("MerchantPayment:", paymentAddr);
 
   // 3. MultiSigWallet (2-of-3). On a real network pass your own owner
-  //    addresses via MULTISIG_OWNERS="0xA,0xB,0xC" in the environment.
-  const envOwners = process.env.MULTISIG_OWNERS?.split(",").map((s) => s.trim());
-  const owners = envOwners && envOwners.length >= 2
-    ? envOwners
-    : [deployer.address, owner1.address, owner2.address];
-  const required = Number(process.env.MULTISIG_REQUIRED ?? 2);
+  //    addresses via MULTISIG_OWNERS="0xA,0xB,0xC" (validated in preflight).
+  const owners = envOwners ?? [deployer.address, owner1.address, owner2.address];
 
   const multisig = await ethers.deployContract("MultiSigWallet", [owners, required]);
   await multisig.waitForDeployment();
@@ -49,7 +46,6 @@ async function main() {
   console.log(`MultiSigWallet : ${multisigAddr}  (${required}-of-${owners.length})`);
 
   // 4. Local convenience: give the next few test accounts 10,000 mUSDC
-  const isLocal = ["localhost", "hardhatMainnet", "hardhatOp"].includes(networkName);
   if (isLocal) {
     for (const s of signers.slice(1, 6)) {
       await (await token.transfer(s.address, 10_000n * 10n ** 6n)).wait();
@@ -59,8 +55,6 @@ async function main() {
 
   // 4b. Any network: send 10,000 mUSDC to extra wallets (e.g. your Sepolia
   //     customer account): FUND_ADDRESSES="0xCustomer1,0xCustomer2"
-  const fundList = (process.env.FUND_ADDRESSES ?? "")
-    .split(",").map((a) => a.trim()).filter(Boolean);
   for (const addr of fundList) {
     await (await token.transfer(addr, 10_000n * 10n ** 6n)).wait();
     console.log(`Sent 10,000 mUSDC to ${addr}`);
@@ -96,8 +90,10 @@ async function main() {
         `  MOCK_STABLECOIN: "${tokenAddr}",`,
         `  MERCHANT_PAYMENT: "${paymentAddr}",`,
         `  MULTISIG_WALLET: "${multisigAddr}",`,
-        `  START_BLOCK: ${startBlock}, // first block to scan for events (keeps Sepolia queries fast)`,
         "};",
+        "",
+        "// First block to scan for events (keeps Sepolia queries fast)",
+        `export const START_BLOCK = ${startBlock};`,
         "",
       ].join("\n")
     );
@@ -108,6 +104,6 @@ async function main() {
 }
 
 main().catch((error) => {
-  console.error(error);
+  console.error(error?.name === "PreflightError" ? error.message : error);
   process.exitCode = 1;
 });

@@ -1,7 +1,7 @@
 
 import { useEffect, useState } from "react";
 import { ethers } from "ethers";
-import { Wallet as WalletIcon, Copy, ExternalLink, RefreshCw } from "lucide-react";
+import { Wallet as WalletIcon, Copy, RefreshCw } from "lucide-react";
 import { useWallet } from "../context/WalletContext";
 import { getMockStablecoinContract } from "../utils/contracts";
 

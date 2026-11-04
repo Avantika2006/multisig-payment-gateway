@@ -12,6 +12,7 @@
     "node": "hardhat node",
     "deploy:local": "hardhat run scripts/deploy.ts --network localhost",
     "demo:local": "hardhat run scripts/demo.ts --network localhost",
+    "check:sepolia": "hardhat run scripts/check-sepolia.ts --network sepolia",
     "deploy:sepolia": "hardhat run scripts/deploy.ts --network sepolia"
   },
   "keywords": [],

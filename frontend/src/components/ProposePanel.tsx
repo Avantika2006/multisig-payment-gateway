@@ -3,15 +3,12 @@ import { ethers } from "ethers";
 import { FilePlus2, Loader2, Send } from "lucide-react";
 
 import { useWallet } from "../context/WalletContext";
-import {
-  getMerchantPaymentContract,
-  getMockStablecoinContract,
-  getMultiSigWalletContract,
-} from "../utils/contracts";
+import { getMockStablecoinContract } from "../utils/contracts";
+import { submitProposal } from "../utils/multisig";
 import { CONTRACT_ADDRESSES } from "../../contractAddresses";
 import "./ProposePanel.css";
 
-type Kind = "refund" | "withdraw" | "invoice";
+type Kind = "refund" | "withdraw";
 
 interface Props {
   isOwner: boolean;
@@ -19,12 +16,10 @@ interface Props {
 }
 
 /**
- * Lets a multi-sig owner create a new proposal:
+ * Lets a multi-sig owner propose moving treasury funds:
  *   - refund a customer           -> token.transfer(customer, amount)
  *   - withdraw funds              -> token.transfer(address, amount)
- *   - create an invoice           -> MerchantPayment.createInvoice(amount)
- *                                    (the multi-sig becomes the merchant, so the
- *                                     payment lands in the multi-sig)
+ * Invoices are proposed from the Invoices page.
  * Nothing moves until the required number of owners approve AND someone executes.
  */
 export default function ProposePanel({ isOwner, onSubmitted }: Props) {
@@ -37,8 +32,6 @@ export default function ProposePanel({ isOwner, onSubmitted }: Props) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
-
-  const needsRecipient = kind !== "invoice";
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -65,40 +58,23 @@ export default function ProposePanel({ isOwner, onSubmitted }: Props) {
       setError("Amount must be greater than zero.");
       return;
     }
-    if (needsRecipient && !ethers.isAddress(recipient)) {
+    if (!ethers.isAddress(recipient)) {
       setError("Enter a valid recipient address.");
       return;
     }
 
     try {
       setBusy(true);
-      const signer = await provider.getSigner();
-      const wallet = getMultiSigWalletContract(signer);
-
-      let to: string;
-      let data: string;
-      if (kind === "invoice") {
-        to = CONTRACT_ADDRESSES.MERCHANT_PAYMENT;
-        data = getMerchantPaymentContract(signer).interface.encodeFunctionData(
-          "createInvoice",
-          [parsedAmount]
-        );
-      } else {
-        to = CONTRACT_ADDRESSES.MOCK_STABLECOIN;
-        data = getMockStablecoinContract(signer).interface.encodeFunctionData(
-          "transfer",
-          [recipient, parsedAmount]
-        );
-      }
-
-      const submitTx = await wallet.submitTransaction(to, 0, data);
-      await submitTx.wait();
-
-      const id = (await wallet.getTransactionCount()) - 1n;
-      if (autoApprove) {
-        const approveTx = await wallet.approveTransaction(id);
-        await approveTx.wait();
-      }
+      const data = getMockStablecoinContract(provider).interface.encodeFunctionData(
+        "transfer",
+        [recipient, parsedAmount]
+      );
+      const id = await submitProposal(
+        provider,
+        CONTRACT_ADDRESSES.MOCK_STABLECOIN,
+        data,
+        autoApprove
+      );
 
       setSuccess(
         `Proposal #${id} submitted${autoApprove ? " and approved by you" : ""}. ` +
@@ -118,7 +94,7 @@ export default function ProposePanel({ isOwner, onSubmitted }: Props) {
     <section className="panel propose-panel">
       <div className="panel-heading">
         <h3>
-          <FilePlus2 size={18} /> New proposal
+          <FilePlus2 size={18} /> Move treasury funds
         </h3>
       </div>
 
@@ -134,7 +110,6 @@ export default function ProposePanel({ isOwner, onSubmitted }: Props) {
             >
               <option value="refund">Refund a customer (mUSDC)</option>
               <option value="withdraw">Withdraw funds (mUSDC)</option>
-              <option value="invoice">Create invoice as multisig</option>
             </select>
           </div>
 
@@ -154,20 +129,18 @@ export default function ProposePanel({ isOwner, onSubmitted }: Props) {
             </div>
           </div>
 
-          {needsRecipient && (
-            <div className="form-group full-row">
-              <label htmlFor="propose-recipient">
-                {kind === "refund" ? "Customer address" : "Destination address"}
-              </label>
-              <input
-                id="propose-recipient"
-                className="propose-text"
-                placeholder="0x..."
-                value={recipient}
-                onChange={(e) => setRecipient(e.target.value.trim())}
-              />
-            </div>
-          )}
+          <div className="form-group full-row">
+            <label htmlFor="propose-recipient">
+              {kind === "refund" ? "Customer address" : "Destination address"}
+            </label>
+            <input
+              id="propose-recipient"
+              className="propose-text"
+              placeholder="0x..."
+              value={recipient}
+              onChange={(e) => setRecipient(e.target.value.trim())}
+            />
+          </div>
         </div>
 
         <label className="propose-check">

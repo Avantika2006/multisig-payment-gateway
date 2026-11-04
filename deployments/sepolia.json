@@ -1,0 +1,20 @@
+{
+  "network": "sepolia",
+  "chainId": 11155111,
+  "deployer": "0xBebC2aE0858769e283d7bc4953277fC54Ba0b05e",
+  "deployedAt": "2026-11-04T13:53:47.739Z",
+  "startBlock": 12062835,
+  "contracts": {
+    "MockStablecoin": "0x59f961E1d23492e0ae36756cFde740e45EB7DbE5",
+    "MerchantPayment": "0xc8c10314C73c43D2597509B2a47C94A9E37a748a",
+    "MultiSigWallet": "0xb596578E1F5F17659478a756AdAf099d2738d35b"
+  },
+  "multisig": {
+    "owners": [
+      "0x17413C9eab87fC5981B7a0F1EB4AbC3D3d961c85",
+      "0xA70aA3ebe8AbFCeA83C8CDd17B025a84D0FdF5f2",
+      "0xc2F4b8cB34006d81A00d201A59E09addb0a00c0a"
+    ],
+    "required": 2
+  }
+}
