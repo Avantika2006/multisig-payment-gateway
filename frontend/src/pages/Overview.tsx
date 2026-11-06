@@ -183,6 +183,7 @@ export default function Overview({ onNavigate }: { onNavigate: (page: string) =>
             <h3>Quick actions</h3>
           </div>
 
+          <div className="quick-action-list">
           <div className="quick-action" onClick={() => onNavigate("Invoices")}>
             <div className="quick-icon"><FilePlus2 size={19} /></div>
             <div>
@@ -210,6 +211,7 @@ export default function Overview({ onNavigate }: { onNavigate: (page: string) =>
               <span>Every on-chain event</span>
             </div>
             <ChevronRight size={17} />
+          </div>
           </div>
         </div>
       </section>

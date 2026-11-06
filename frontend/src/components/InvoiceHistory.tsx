@@ -31,6 +31,9 @@ export default function InvoiceHistory({ refreshKey = "" }: { refreshKey?: strin
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
   const [copied, setCopied] = useState("");
+  // Invoices this browser just paid. The backend only reports them as paid after a few
+  // confirmations, so until then we overlay the result here to hide the Pay button.
+  const [localPaid, setLocalPaid] = useState<Record<string, { customer?: string; payTx?: string }>>({});
 
   const load = useCallback(async () => {
     if (!provider) return;
@@ -56,7 +59,22 @@ export default function InvoiceHistory({ refreshKey = "" }: { refreshKey?: strin
   const isMine = (r: InvoiceRow) =>
     same(r.merchant, account) || same(r.merchant, CONTRACT_ADDRESSES.MULTISIG_WALLET);
 
-  const visible = scope === "mine" && account ? rows.filter(isMine) : rows;
+  const merged = rows.map((r) =>
+    !r.paid && localPaid[r.id]
+      ? { ...r, paid: true, customer: r.customer ?? localPaid[r.id].customer, payTx: r.payTx ?? localPaid[r.id].payTx }
+      : r
+  );
+  const visible = scope === "mine" && account ? merged.filter(isMine) : merged;
+
+  // While a local payment is not yet confirmed by the backend, re-check every 5 seconds.
+  const waitingOnBackend = rows.some((r) => !r.paid && localPaid[r.id]);
+  useEffect(() => {
+    if (!waitingOnBackend) return;
+    const t = setInterval(() => {
+      fetchInvoices(provider).then(setRows).catch(() => {});
+    }, 5_000);
+    return () => clearInterval(t);
+  }, [waitingOnBackend, provider]);
 
   async function payInvoice(row: InvoiceRow) {
     if (!provider || !account) return;
@@ -84,11 +102,19 @@ export default function InvoiceHistory({ refreshKey = "" }: { refreshKey?: strin
       const payTx = await gateway.payInvoice(row.id);
       await payTx.wait();
 
-      // The backend waits for a few confirmations, so the "Paid" badge can lag ~1 minute.
-      setSuccess(`Invoice #${row.id} paid (${row.amount} mUSDC). It may take a minute to show as paid.`);
+      setLocalPaid((m) => ({ ...m, [row.id]: { customer: account, payTx: payTx.hash } }));
+      setSuccess(`Invoice #${row.id} paid (${row.amount} mUSDC).`);
       await load();
     } catch (err: any) {
-      setError(err?.reason || err?.shortMessage || err?.message || "Payment failed.");
+      const msg: string = err?.reason || err?.shortMessage || err?.message || "Payment failed.";
+      if (msg.includes("Invoice already paid")) {
+        // Paid on-chain already; the list was just behind. Hide the button and refresh.
+        setLocalPaid((m) => ({ ...m, [row.id]: m[row.id] ?? {} }));
+        setSuccess(`Invoice #${row.id} is already paid. Updating the list...`);
+        await load();
+      } else {
+        setError(msg);
+      }
     } finally {
       setPayingId(null);
     }

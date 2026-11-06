@@ -102,7 +102,7 @@ function CreateInvoice({ onNavigate }: { onNavigate: (page: string) => void }) {
     <div className="invoice-page">
       <div className="page-heading">
         <div>
-          <p className="eyebrow">MERCHANT WORKSPACE</p>
+          <p className="eyebrow">{isOwner || !account ? "MERCHANT WORKSPACE" : "CUSTOMER WORKSPACE"}</p>
           <h1>Invoices</h1>
           <p className="page-subtitle">
             {isOwner

@@ -7,12 +7,14 @@ import {
   Settings2,
   Bell,
   Store,
+  User,
   Menu,
   Wallet as WalletIcon,
 } from "lucide-react";
 
 import { useWallet } from "../context/WalletContext";
 import { useEffect, useState } from "react";
+import { isOwnerOf, loadMultisigInfo, type MultisigInfo } from "../utils/multisig";
 
 import CreateInvoice from "./CreateInvoice";
 import Overview from "./Overview";
@@ -35,6 +37,20 @@ function Dashboard() {
 
   const [activePage, setActivePage] = useState("Overview");
   const [networkName, setNetworkName] = useState("Not connected");
+  const [multisig, setMultisig] = useState<MultisigInfo | null>(null);
+
+  // A connected wallet that is not a multisig owner is a customer: tint the UI so
+  // the customer view is easy to tell apart from the owner view.
+  useEffect(() => {
+    if (!provider) {
+      setMultisig(null);
+      return;
+    }
+    loadMultisigInfo(provider)
+      .then(setMultisig)
+      .catch((err) => console.error("Could not read multisig owners:", err));
+  }, [provider]);
+  const isCustomer = Boolean(account && multisig && !isOwnerOf(multisig, account));
 
   const shortAddress = account
     ? `${account.slice(0, 6)}...${account.slice(-4)}`
@@ -56,7 +72,7 @@ function Dashboard() {
   }, [account, provider]);
 
   return (
-    <div className="quorum-app">
+    <div className={`quorum-app${isCustomer ? " customer-theme" : ""}`}>
       {/* SIDEBAR */}
       <aside className="sidebar">
         <div className="brand">
@@ -93,11 +109,11 @@ function Dashboard() {
 
         <div className="sidebar-bottom">
           <div className="merchant-avatar">
-            <Store size={21} />
+            {isCustomer ? <User size={21} /> : <Store size={21} />}
           </div>
 
           <div className="merchant-info">
-            <strong>Merchant account</strong>
+            <strong>{isCustomer ? "Customer account" : "Merchant account"}</strong>
             <span>
               <i className="online-dot" /> {networkName}
             </span>

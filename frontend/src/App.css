@@ -43,6 +43,20 @@ button {
     var(--oxblood);
 }
 
+/* CUSTOMER VIEW: same layout, navy/blue tint instead of wine/rose.
+   Status colours (paid green, pending amber, errors) are rotated back so they keep their meaning. */
+.quorum-app.customer-theme {
+  filter: hue-rotate(-130deg);
+}
+
+.customer-theme .status-badge,
+.customer-theme .form-error,
+.customer-theme .success-message,
+.customer-theme .online-dot,
+.customer-theme .network-dot {
+  filter: hue-rotate(130deg);
+}
+
 /* SIDEBAR */
 .sidebar {
   width: 260px;
@@ -886,11 +900,15 @@ button {
     grid-template-columns: 1.5fr 1fr;
   }
 
+  .bottom-grid {
+    grid-template-columns: 1fr;
+  }
+
   .quick-actions-panel {
     grid-column: 1 / -1;
   }
 
-  .quick-actions-panel > div:last-child {
+  .quick-action-list {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
     gap: 8px;
@@ -953,7 +971,7 @@ button {
     grid-column: auto;
   }
 
-  .quick-actions-panel > div:last-child {
+  .quick-action-list {
     display: flex;
     flex-direction: column;
   }
