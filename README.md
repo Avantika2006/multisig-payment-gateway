@@ -339,6 +339,6 @@ This is a learning project and **has not been audited**. Known limitations:
 
 ## 13. Team and license
 
-Built by Avantika Chakraborty and team for CS2614 Fundamentals of Blockchain, RV University, Bengaluru.
+Built by Avantika Chakraborty, Deepti N Katti and Meghna Nair for CS2614 Fundamentals of Blockchain, RV University, Bengaluru.
 
 Released under the MIT license.
